@@ -1,0 +1,52 @@
+{% extends 'admin/base_site.html' %}
+{% block content %}
+  <h1>Поиск товаров по запросу клиента</h1>
+  <form method="post">
+    {% csrf_token %}
+    {{ form.as_p }}
+    <button type="submit" class="default">Найти</button>
+    <button type="submit" formaction="{% url 'ai_product_search' %}" formmethod="post" class="default" style="margin-left:10px;">Найти через ИИ</button>
+  </form>
+  {% if chars %}
+    <h3>Извлечённые характеристики:</h3>
+    <ul>
+      {% for key, value in chars.items %}
+        <li><b>{{ key }}:</b> {{ value|default:'—' }}</li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+  {% if results is not None %}
+    <h3>Результаты поиска:</h3>
+    {% if results %}
+      <form method="post" action="{% url 'create_proposal' %}">
+        {% csrf_token %}
+        <input type="hidden" name="query_text" value="{{ form.data.query }}">
+        <table border="1" cellpadding="5">
+          <tr>
+            <th></th>
+            <th>Поставщик</th>
+            <th>Наименование</th>
+            <th>Диаметр</th>
+            <th>Давление</th>
+            <th>Цена</th>
+            <th>Остаток</th>
+          </tr>
+          {% for product in results %}
+          <tr>
+            <td><input type="checkbox" name="product_ids" value="{{ product.id }}" checked></td>
+            <td>{{ product.supplier.name }}</td>
+            <td>{{ product.name }}</td>
+            <td>{{ product.diameter }}</td>
+            <td>{{ product.pressure }}</td>
+            <td>{{ product.price }}</td>
+            <td>{{ product.stock }}</td>
+          </tr>
+          {% endfor %}
+        </table>
+        <button type="submit" class="default">Сформировать КП (PDF)</button>
+      </form>
+    {% else %}
+      <p>Ничего не найдено.</p>
+    {% endif %}
+  {% endif %}
+{% endblock %} 

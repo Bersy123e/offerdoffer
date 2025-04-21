@@ -1,0 +1,32 @@
+{% extends 'admin/base_site.html' %}
+{% block content %}
+  <h1>История запросов и коммерческих предложений</h1>
+  <table border="1" cellpadding="5">
+    <tr>
+      <th>Дата/время</th>
+      <th>Запрос</th>
+      <th>Найдено товаров</th>
+      <th>КП (Excel)</th>
+    </tr>
+    {% for query in queries %}
+      <tr>
+        <td>{{ query.created_at|date:"d.m.Y H:i" }}</td>
+        <td>{{ query.query_text|truncatechars:80 }}</td>
+        <td>{{ query.result_count }}</td>
+        <td>
+          {% for proposal in query.proposals.all %}
+            {% if proposal.file %}
+              <a href="{{ proposal.file.url }}" download>Скачать КП ({{ proposal.created_at|date:"d.m.Y H:i" }})</a><br>
+            {% else %}
+              —
+            {% endif %}
+          {% empty %}
+            —
+          {% endfor %}
+        </td>
+      </tr>
+    {% empty %}
+      <tr><td colspan="4">История пуста</td></tr>
+    {% endfor %}
+  </table>
+{% endblock %} 
