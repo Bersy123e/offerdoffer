@@ -6,8 +6,8 @@ from openai import OpenAI, OpenAIError
 
 # --- Твои данные ---
 PROXY_URL = "http://niM1Bv1s:tbrA9EWJ@172.120.17.109:64192"
-# Берем ключ из окружения или используем тот, что был в коде как fallback
-API_KEY = os.environ.get("OPENAI_API_KEY", "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") 
+# Берем ключ из окружения или используем пустую строку как fallback
+API_KEY = os.environ.get("OPENAI_API_KEY", "") 
 # --- ---
 
 print(f"Используется Proxy: {PROXY_URL}")
