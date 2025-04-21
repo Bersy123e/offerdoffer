@@ -1,0 +1,36 @@
+{% extends 'admin/base_site.html' %}
+{% block content %}
+  <h1>ИИ-поиск товаров по базе</h1>
+  <form method="post">
+    {% csrf_token %}
+    {{ form.as_p }}
+    <button type="submit" class="default">Найти через ИИ</button>
+  </form>
+  {% if results is not None %}
+    <h3>Результаты поиска для запроса: <i>{{ query }}</i></h3>
+    {% if results %}
+      <table border="1" cellpadding="5">
+        <tr>
+          <th>Поставщик</th>
+          <th>Наименование</th>
+          <th>Диаметр</th>
+          <th>Давление</th>
+          <th>Цена</th>
+          <th>Остаток</th>
+        </tr>
+        {% for product in results %}
+        <tr>
+          <td>{{ product.supplier }}</td>
+          <td>{{ product.name }}</td>
+          <td>{{ product.diameter }}</td>
+          <td>{{ product.pressure }}</td>
+          <td>{{ product.price }}</td>
+          <td>{{ product.stock }}</td>
+        </tr>
+        {% endfor %}
+      </table>
+    {% else %}
+      <p>Ничего не найдено.</p>
+    {% endif %}
+  {% endif %}
+{% endblock %} 

@@ -1,0 +1,16 @@
+{% extends 'admin/base_site.html' %}
+{% block content %}
+  <h1>Загрузка прайс-листа</h1>
+  <form method="post" enctype="multipart/form-data">
+    {% csrf_token %}
+    {{ form.file.label_tag }} {{ form.file }}
+    <button type="submit" class="default">Загрузить</button>
+  </form>
+  {% if messages %}
+    <ul class="messages">
+      {% for message in messages %}
+        <li{% if message.tags %} class="{{ message.tags }}"{% endif %}>{{ message }}</li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+{% endblock %} 
