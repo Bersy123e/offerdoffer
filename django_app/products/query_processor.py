@@ -52,7 +52,7 @@ class QueryProcessor:
     def _initialize_llm(self):
         """Initialize LangChain with OpenAI."""
         try:
-            api_key = os.environ.get("OPENAI_API_KEY", "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")
+            api_key = os.environ.get("OPENAI_API_KEY", "")
             proxy_url = "http://niM1Bv1s:tbrA9EWJ@172.120.17.109:64192"
             proxies = {"http://": proxy_url, "https://": proxy_url}
             http_client = httpx.Client(proxies=proxies)
@@ -244,7 +244,7 @@ class QueryProcessor:
         except Exception as e:
             logger.error(f"Error processing query: {str(e)}")
             raise
-
+    
     def split_query_into_items(self, full_query: str) -> List[Dict[str, Any]]:
         """Splits a full query text into individual item queries and quantities using LLM."""
         items = []
