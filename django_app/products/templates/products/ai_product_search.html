@@ -1,36 +1,49 @@
-{% extends 'admin/base_site.html' %}
+{% extends 'products/base_dashboard.html' %}
+{% block title %}ИИ-поиск | Панель управления ООО «АРМАСЕТИ ИМПОРТ»{% endblock %}
 {% block content %}
-  <h1>ИИ-поиск товаров по базе</h1>
-  <form method="post">
-    {% csrf_token %}
-    {{ form.as_p }}
-    <button type="submit" class="default">Найти через ИИ</button>
-  </form>
-  {% if results is not None %}
-    <h3>Результаты поиска для запроса: <i>{{ query }}</i></h3>
-    {% if results %}
-      <table border="1" cellpadding="5">
+<h2 class="mb-4">ИИ-поиск товаров</h2>
+<form method="post" class="row g-3 mb-4">
+  {% csrf_token %}
+  <div class="col-md-10">
+    {{ form.query.label_tag }}
+    {{ form.query }}
+  </div>
+  <div class="col-md-2 d-flex align-items-end">
+    <button type="submit" class="btn btn-primary btn-lg w-100">Искать</button>
+  </div>
+</form>
+{% if messages %}
+  <div class="mb-3">
+    {% for message in messages %}
+      <div class="alert alert-{{ message.tags }}">{{ message }}</div>
+    {% endfor %}
+  </div>
+{% endif %}
+{% if results %}
+  <h5 class="mb-3">Результаты поиска:</h5>
+  <div class="table-responsive">
+    <table class="table table-bordered table-hover align-middle">
+      <thead class="table-light">
         <tr>
           <th>Поставщик</th>
           <th>Наименование</th>
-          <th>Диаметр</th>
-          <th>Давление</th>
           <th>Цена</th>
           <th>Остаток</th>
+          <th>Артикул</th>
         </tr>
+      </thead>
+      <tbody>
         {% for product in results %}
         <tr>
-          <td>{{ product.supplier }}</td>
+          <td>{{ product.supplier.name }}</td>
           <td>{{ product.name }}</td>
-          <td>{{ product.diameter }}</td>
-          <td>{{ product.pressure }}</td>
           <td>{{ product.price }}</td>
           <td>{{ product.stock }}</td>
+          <td>{{ product.article }}</td>
         </tr>
         {% endfor %}
-      </table>
-    {% else %}
-      <p>Ничего не найдено.</p>
-    {% endif %}
-  {% endif %}
+      </tbody>
+    </table>
+  </div>
+{% endif %}
 {% endblock %} 

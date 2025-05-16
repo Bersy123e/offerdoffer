@@ -1,7 +1,7 @@
 import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
-from django.shortcuts import render, redirect
+from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib import messages
 from .models import Supplier, Product, Proposal, SearchQuery
 from django import forms
@@ -15,18 +15,31 @@ from openpyxl.styles import Alignment, Font, Border, Side
 from django.core.files import File
 from django.views.decorators.csrf import csrf_exempt
 # Импортируем QueryProcessor и зависимости
-from .query_processor import QueryProcessor
+from .query_processor import QueryProcessor, extract_quantity
 # from .data_loader import DataLoader # DataLoader все еще не нужен
 from .cache import QueryCache
 from django.core.files.uploadedfile import UploadedFile
 import docx, PyPDF2
 import chardet
 import logging
+import csv
+import io
+from logger import setup_logger  # <--- добавил импорт
+from typing import List, Tuple, Optional
+from django.urls import reverse # Добавили reverse
+import json
+
+# --- Добавляем загрузку .env перед инициализацией --- 
+from dotenv import load_dotenv
+load_dotenv() # Загрузит .env из корня проекта
+# --- Конец добавления --- 
 
 # Create your views here.
 
 class PriceListUploadForm(forms.Form):
     file = forms.FileField(label='Прайс-лист (Excel/CSV)')
+    supplier_name = forms.CharField(label='Поставщик', required=False)
+    date_str = forms.CharField(label='Дата (ГГГГ-ММ-ДД)', required=False)
 
 # ВОССТАНАВЛИВАЕМ СТАРЫЙ ПАРСЕР (на всякий случай, хотя upload_price_list использует ИИ)
 def parse_price_list(file):
@@ -61,65 +74,386 @@ def parse_price_list(file):
     return products
 
 
+logger = setup_logger()
+query_cache = QueryCache()
+query_processor = QueryProcessor(query_cache) # Теперь переменные точно доступны
+
+def find_header_row_and_read_data(file_path: str, file_ext: str, encoding: Optional[str] = None, delimiter: Optional[str] = None, n_sample_rows: int = 10) -> Tuple[List[str], pd.DataFrame]:
+    """
+    Ищет строку с заголовками по ключевым словам и возвращает (заголовки, DataFrame с данными начиная с этой строки).
+    """
+    # Ключевые слова для поиска заголовков
+    header_keywords = [
+        'наимен', 'товар', 'артикул', 'код', 'цена', 'стоим', 'кол-во', 'остат', 'вес', 'ед', 'unit', 'sku', 'product', 'name', 'amount', 'qty', 'quantity'
+    ]
+    max_scan_rows = 20
+    if file_ext in ['.xlsx', '.xls']:
+        df_all = pd.read_excel(file_path, header=None, nrows=max_scan_rows)
+        for idx, row in df_all.iterrows():
+            row_strs = [str(cell).lower() for cell in row if pd.notna(cell)]
+            matches = sum(any(kw in cell for kw in header_keywords) for cell in row_strs)
+            if matches >= 2:
+                # Нашли строку с заголовками
+                header_row_idx = idx
+                headers = [str(cell) for cell in row]
+                # Читаем данные начиная со следующей строки
+                df = pd.read_excel(file_path, header=header_row_idx, dtype=str)
+                return headers, df.head(n_sample_rows)
+        # Если не нашли — читаем как обычно
+        df = pd.read_excel(file_path, header=0, dtype=str)
+        headers = df.columns.tolist()
+        return headers, df.head(n_sample_rows)
+    elif file_ext == '.csv':
+        # Определяем кодировку и разделитель, если не заданы
+        if not encoding:
+            with open(file_path, 'rb') as f:
+                rawdata = f.read(5000)
+                encoding_result = chardet.detect(rawdata)
+                encoding = encoding_result['encoding'] if encoding_result else 'utf-8'
+        if not delimiter:
+            with io.TextIOWrapper(open(file_path, 'rb'), encoding=encoding, newline='') as f_text:
+                sample_csv = f_text.read(1024)
+                sniffer = csv.Sniffer()
+                try:
+                    dialect = sniffer.sniff(sample_csv)
+                    delimiter = dialect.delimiter
+                except csv.Error:
+                    delimiter = ','
+        # Сканируем первые строки
+        with open(file_path, encoding=encoding, newline='') as f:
+            reader = csv.reader(f, delimiter=delimiter)
+            rows = list(reader)[:max_scan_rows]
+        for idx, row in enumerate(rows):
+            row_strs = [str(cell).lower() for cell in row if cell]
+            matches = sum(any(kw in cell for kw in header_keywords) for cell in row_strs)
+            if matches >= 2:
+                header_row_idx = idx
+                headers = [str(cell) for cell in row]
+                df = pd.read_csv(file_path, header=header_row_idx, sep=delimiter, encoding=encoding, dtype=str)
+                return headers, df.head(n_sample_rows)
+        # Если не нашли — читаем как обычно
+        df = pd.read_csv(file_path, header=0, sep=delimiter, encoding=encoding, dtype=str)
+        headers = df.columns.tolist()
+        return headers, df.head(n_sample_rows)
+    else:
+        raise ValueError(f"Unsupported file type: {file_ext}")
+
+# --- Добавляем форму для ручного маппинга ---
+class ManualMappingForm(forms.Form):
+    file_path = forms.CharField(widget=forms.HiddenInput())
+    supplier_id = forms.CharField(widget=forms.HiddenInput())
+    # Используем ChoiceField для выпадающих списков
+    name_col = forms.ChoiceField(label="Колонка с Наименованием товара", required=True)
+    price_col = forms.ChoiceField(label="Колонка с Ценой", required=True)
+    stock_col = forms.ChoiceField(label="Колонка с Остатком/Количеством", required=False) # Необязательно
+    article_col = forms.ChoiceField(label="Колонка с Артикулом/Кодом", required=False) # Необязательно
+
+    def __init__(self, headers, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Заполняем choices для выпадающих списков заголовками из файла
+        choices = [('', '--- Не выбрано ---')] + [(h, h) for h in headers if h]
+        self.fields['name_col'].choices = choices
+        self.fields['price_col'].choices = choices
+        # Для необязательных добавляем опцию "Нет такой колонки"
+        optional_choices = [('', '--- Нет такой колонки ---')] + [(h, h) for h in headers if h]
+        self.fields['stock_col'].choices = optional_choices
+        self.fields['article_col'].choices = optional_choices
+# --- Конец формы --- 
+
+@csrf_exempt
 def upload_price_list(request):
-    logger = logging.getLogger()
+    import logging
+    logging.getLogger().info("upload_price_list CALLED")
     if request.method == 'POST':
         form = PriceListUploadForm(request.POST, request.FILES)
         if form.is_valid():
-            file = form.cleaned_data['file']
+            uploaded_file = request.FILES['file']
+            file_base = os.path.splitext(uploaded_file.name)[0]
+            supplier_name = None
+            date_str = None
+            match = re.match(r"([\w\s\-]+)[_\s-](20\d{2}[\.-]\d{2}[\.-]\d{2})", file_base)
+            if match:
+                supplier_name = match.group(1).strip()
+                date_str = match.group(2).replace('.', '-').replace('_', '-')
+            else:
+                parts = file_base.split()
+                if len(parts) > 0:
+                    supplier_name = parts[0]
+            if not supplier_name or not date_str:
+                if not request.POST.get('supplier_name') or not request.POST.get('date_str'):
+                    form.fields['supplier_name'].required = True
+                    form.fields['date_str'].required = True
+                    return render(request, 'products/upload_price_list.html', {'form': form, 'suppliers': Supplier.objects.all(), 'need_supplier_date': True})
+                supplier_name = request.POST.get('supplier_name')
+                date_str = request.POST.get('date_str')
+            supplier, _ = Supplier.objects.get_or_create(name=supplier_name)
+            messages.info(request, f'Поставщик: {supplier.name}, дата: {date_str}')
+            file_path_in_uploads = os.path.join('uploads', uploaded_file.name)
+            os.makedirs('uploads', exist_ok=True)
+            with open(file_path_in_uploads, 'wb+') as destination:
+                for chunk in uploaded_file.chunks():
+                    destination.write(chunk)
+            logger.info(f"Uploaded file saved to: {file_path_in_uploads}")
             try:
-                if file.name.endswith('.csv'):
-                    df = pd.read_csv(file)
-                elif file.name.endswith(('.xlsx', '.xls')):
-                    df = pd.read_excel(file)
-                else:
-                    raise ValueError('Неподдерживаемый формат файла. Используйте CSV или Excel.')
-                # Вызов нейросети для парсинга
-                table_rows = df.to_dict(orient='records')
-                logger.info(f"Отправка {len(table_rows)} строк в ИИ-парсер...")
-                products_data = query_processor.extract_products_from_table(table_rows)
-                logger.info(f"ИИ-парсер вернул {len(products_data)} товаров.")
-
-                # Получаем имя поставщика из имени файла, если оно есть
-                file_base_name = os.path.splitext(os.path.basename(file.name))[0]
-                # Предполагаем, что имя поставщика - первое слово в имени файла
-                file_supplier_name = file_base_name.split()[0] if file_base_name else 'Неизвестный поставщик'
-                supplier, created = Supplier.objects.get_or_create(name=file_supplier_name)
-                if created:
-                    logger.info(f"Создан новый поставщик: {file_supplier_name}")
-
-                # Очищаем старые товары ТОЛЬКО этого поставщика
-                deleted_count, _ = Product.objects.filter(supplier=supplier).delete()
-                logger.info(f"Удалены старые товары ({deleted_count} шт.) поставщика: {supplier.name}")
-
-                added_count = 0
-                skipped_count = 0
-                for pdata in products_data:
-                    # Проверяем, есть ли обязательные поля от ИИ
-                    if pdata.get('name') and pdata.get('price') is not None:
-                        Product.objects.create(
-                            supplier=supplier,
-                            name=pdata.get('name', ''),
-                            price=pdata.get('price'),
-                            stock=pdata.get('stock') or 100, # Задаем остаток по умолчанию
-                        )
-                        added_count += 1
+                file_ext = os.path.splitext(uploaded_file.name)[1].lower()
+                if file_ext in ['.xlsx', '.xls']:
+                    if file_ext == '.xls':
+                        df = pd.read_excel(file_path_in_uploads, dtype=str, engine='xlrd')
                     else:
+                        df = pd.read_excel(file_path_in_uploads, dtype=str)
+                elif file_ext == '.csv':
+                    df = pd.read_csv(file_path_in_uploads, dtype=str)
+                elif file_ext in ['.doc', '.docx']:
+                    try:
+                        doc = docx.Document(file_path_in_uploads)
+                        data = []
+                        for table in doc.tables:
+                            for row in table.rows:
+                                data.append([cell.text.strip() for cell in row.cells])
+                        if not data:
+                            raise ValueError('В файле DOC не найдено таблиц.')
+                        headers = data[0]
+                        df = pd.DataFrame(data[1:], columns=headers)
+                    except Exception as doc_err:
+                        logger.error(f"Ошибка чтения DOC/DOCX: {doc_err}")
+                        messages.error(request, f'Ошибка чтения DOC/DOCX: {doc_err}')
+                        if os.path.exists(file_path_in_uploads):
+                            try: os.remove(file_path_in_uploads)
+                            except OSError: pass
+                        return render(request, 'products/upload_price_list.html', {'form': form, 'suppliers': Supplier.objects.all()})
+                else:
+                    messages.error(request, f'Неподдерживаемый формат файла: {file_ext}')
+                    if os.path.exists(file_path_in_uploads):
+                        try: os.remove(file_path_in_uploads)
+                        except OSError: pass
+                    return render(request, 'products/upload_price_list.html', {'form': form, 'suppliers': Supplier.objects.all()})
+
+                table_dicts = df.fillna('').to_dict(orient='records')
+
+                # --- Проверка LLM ---
+                if not query_processor.llm:
+                    logger.error("LLM не инициализирован! Проверьте настройки и переменные окружения.")
+                    messages.error(request, 'Ошибка: LLM не инициализирован. Проверьте настройки сервера и API-ключи.')
+                    if os.path.exists(file_path_in_uploads):
+                        try: os.remove(file_path_in_uploads)
+                        except OSError: pass
+                    return render(request, 'products/upload_price_list.html', {'form': form, 'suppliers': Supplier.objects.all()})
+
+                try:
+                    products = query_processor.extract_products_from_table(table_dicts)
+                    logger.info(f"products from LLM: {products}")
+                except Exception as e:
+                    logger.error(f"Ошибка LLM при разборе прайса: {e}")
+                    messages.error(request, f'Ошибка LLM при разборе прайса: {e}')
+                    if os.path.exists(file_path_in_uploads):
+                        try: os.remove(file_path_in_uploads)
+                        except OSError: pass
+                    return render(request, 'products/upload_price_list.html', {'form': form, 'suppliers': Supplier.objects.all()})
+
+                # Сохраняем в базу
+                Product.objects.filter(supplier=supplier).delete()
+                products_to_create = []
+                created_count = 0
+                skipped_count = 0
+                for item in products:
+                    name = item.get('name')
+                    price = item.get('price')
+                    if not name or not str(name).strip():
                         skipped_count += 1
-                        logger.warning(f"Пропущен товар из-за отсутствия имени или цены: {pdata}")
-
-                if skipped_count > 0:
-                     messages.warning(request, f'Пропущено {skipped_count} товаров из-за отсутствия данных.')
-                messages.success(request, f'Прайс-лист успешно загружен. Добавлено товаров: {added_count} для поставщика {supplier.name}')
-
-            except Exception as e:
-                messages.error(request, f'Ошибка при обработке файла: {e}')
-                logger.exception("Ошибка при загрузке прайса")
-            return redirect('upload_price_list')
+                        continue
+                    try:
+                        price_val = float(price)
+                    except (TypeError, ValueError):
+                        skipped_count += 1
+                        continue
+                    stock = item.get('stock')
+                    try:
+                        stock_val = int(stock) if stock is not None else 100
+                    except (TypeError, ValueError):
+                        stock_val = 100
+                    products_to_create.append(Product(
+                        supplier=supplier,
+                        name=str(name).strip(),
+                        price=price_val,
+                        stock=stock_val
+                    ))
+                    created_count += 1
+                    if len(products_to_create) >= 500:
+                        Product.objects.bulk_create(products_to_create)
+                        products_to_create = []
+                if products_to_create:
+                    Product.objects.bulk_create(products_to_create)
+                messages.success(request, f'Прайс-лист успешно загружен. Добавлено {created_count} товаров, пропущено {skipped_count} строк.')
+                if os.path.exists(file_path_in_uploads):
+                    try: os.remove(file_path_in_uploads)
+                    except OSError: pass
+                return redirect('upload_price_list')
+            except Exception as process_err:
+                logger.exception(f"Error processing file {file_path_in_uploads}.")
+                messages.error(request, f'Ошибка обработки файла: {process_err}')
+                raise
+        else:
+            logger.error(f"Price list upload form invalid: {form.errors}")
     else:
         form = PriceListUploadForm()
-    return render(request, 'products/upload_price_list.html', {'form': form})
+    suppliers = Supplier.objects.all()
+    return render(request, 'products/upload_price_list.html', {'form': form, 'suppliers': suppliers})
 
+# --- Новая view для ручного маппинга --- 
+@csrf_exempt
+def manual_column_mapping(request):
+    mapping_data = request.session.get('manual_mapping_data')
+    if not mapping_data:
+        messages.error(request, "Нет данных для ручного маппинга. Загрузите файл заново.")
+        return redirect('upload_price_list')
+        
+    file_path = mapping_data['file_path']
+    supplier_id = mapping_data['supplier_id']
+    headers = mapping_data['headers']
+    supplier = get_object_or_404(Supplier, id=supplier_id)
+    
+    if request.method == 'POST':
+        form = ManualMappingForm(headers, request.POST)
+        if form.is_valid():
+            # Собираем маппинг из формы
+            manual_map = {
+                'name': form.cleaned_data['name_col'] or None,
+                'price': form.cleaned_data['price_col'] or None,
+                'stock': form.cleaned_data['stock_col'] or None,
+                'article': form.cleaned_data['article_col'] or None,
+            }
+            logger.info(f"Using manually provided mapping: {manual_map}")
+            
+            # --- Копируем код обработки файла из upload_price_list, используя manual_map ---
+            try:
+                file_ext = os.path.splitext(file_path)[1].lower()
+                relevant_file_headers = [h for h in manual_map.values() if h is not None]
+                if not relevant_file_headers:
+                    raise ValueError("Вручную не выбраны колонки.")
+                    
+                # Находим строку с заголовками (для корректного usecols)
+                header_row_idx = -1
+                header_keywords = ['наимен', 'товар', 'цена', 'кол-во'] # Упрощенный набор для поиска
+                if file_ext in ['.xlsx', '.xls']:
+                    df_check = pd.read_excel(file_path, header=None, nrows=20, dtype=str)
+                    for idx, row in df_check.iterrows():
+                         row_strs = [str(cell).lower() for cell in row if pd.notna(cell)]
+                         matches = sum(any(kw in cell for kw in header_keywords) for cell in row_strs)
+                         if matches >= 2:
+                              header_row_idx = idx
+                              break
+                    if header_row_idx == -1: header_row_idx = 0 # Если не нашли, считаем с первой
+                    df = pd.read_excel(file_path, header=header_row_idx, usecols=relevant_file_headers, dtype=str)
+                elif file_ext == '.csv':
+                    # ... (Аналогичный код для CSV: определить кодировку/разделитель, найти header_row_idx) ...
+                    with open(file_path, 'rb') as f_rb:
+                        rawdata = f_rb.read(5000)
+                        encoding = chardet.detect(rawdata)['encoding'] or 'utf-8'
+                    with io.TextIOWrapper(open(file_path, 'rb'), encoding=encoding, newline='') as f_text:
+                        sample_csv = f_text.read(1024)
+                        sniffer = csv.Sniffer()
+                        try:
+                            dialect = sniffer.sniff(sample_csv)
+                            delimiter = dialect.delimiter
+                        except csv.Error:
+                            delimiter = ','
+                    with open(file_path, encoding=encoding, newline='') as f_csv:
+                        reader = csv.reader(f_csv, delimiter=delimiter)
+                        rows = list(reader)[:20]
+                    for idx, row in enumerate(rows):
+                        row_strs = [str(cell).lower() for cell in row if cell]
+                        matches = sum(any(kw in cell for kw in header_keywords) for cell in row_strs)
+                        if matches >= 2:
+                            header_row_idx = idx
+                            break
+                    if header_row_idx == -1: header_row_idx = 0
+                    df = pd.read_csv(file_path, header=header_row_idx, sep=delimiter, encoding=encoding, usecols=relevant_file_headers, dtype=str)
+                else:
+                    raise ValueError(f"Unsupported file type {file_ext}")
+                    
+                # Переименовываем колонки
+                rename_mapping = {v: k for k, v in manual_map.items() if v is not None}
+                df.rename(columns=rename_mapping, inplace=True)
+                
+                # --- (Код сохранения данных в Product - точно такой же, как в upload_price_list) ---
+                Product.objects.filter(supplier=supplier).delete()
+                products_to_create = []
+                created_count = 0
+                skipped_count = 0
+                for index, row in df.iterrows():
+                    name = row.get('name')
+                    price_val = row.get('price')
+                    if pd.isna(name) or not str(name).strip():
+                        skipped_count += 1
+                        continue
+                    price = None
+                    if pd.notna(price_val):
+                        price_str = re.sub(r'[^0-9.,]', '', str(price_val)).replace(',', '.')
+                        try:
+                            price = float(price_str) if price_str else None
+                        except ValueError:
+                            price = None
+                    if price is None:
+                        skipped_count += 1
+                        continue
+                    stock_val = row.get('stock')
+                    stock = 100
+                    if pd.notna(stock_val):
+                        stock_str = str(stock_val).lower()
+                        if 'наличи' in stock_str or 'есть' in stock_str:
+                            stock = 100
+                        elif 'заказ' in stock_str:
+                            stock = 0
+                        else:
+                            stock_str_cleaned = re.sub(r'[^0-9]', '', stock_str)
+                            try:
+                                stock = int(stock_str_cleaned) if stock_str_cleaned else 0
+                            except ValueError:
+                                stock = 0
+                    products_to_create.append(
+                        Product(
+                            supplier=supplier,
+                            name=str(name).strip(),
+                            price=price,
+                            stock=stock
+                        )
+                    )
+                    created_count += 1
+                    if len(products_to_create) >= 500:
+                        Product.objects.bulk_create(products_to_create)
+                        products_to_create = []
+                if products_to_create:
+                    Product.objects.bulk_create(products_to_create)
+                # --- Конец кода сохранения ---
+                
+                messages.success(request, f'Прайс-лист успешно загружен по ручному маппингу. Добавлено {created_count} товаров, пропущено {skipped_count} строк.')
+                del request.session['manual_mapping_data'] # Очищаем сессию
+                # Удаляем временный файл
+                if os.path.exists(file_path):
+                    try: os.remove(file_path)
+                    except OSError: pass
+                return redirect('upload_price_list')
+                
+            except Exception as process_err:
+                logger.exception(f"Error processing file {file_path} with MANUAL mapping.")
+                messages.error(request, f'Ошибка обработки файла при ручном маппинге: {process_err}')
+                # Удаляем временный файл при ошибке
+                if os.path.exists(file_path):
+                    try: os.remove(file_path)
+                    except OSError: pass
+                return redirect('upload_price_list')
+        else:
+             messages.error(request, "Ошибка в форме ручного маппинга.")
+    else:
+        form = ManualMappingForm(headers)
+        
+    return render(request, 'products/manual_mapping_form.html', {
+        'form': form, 
+        'supplier_name': supplier.name,
+        'file_name': os.path.basename(file_path),
+        'headers': headers # Передаем заголовки для отображения
+    })
+# --- Конец новой view ---
 
 # --- УДАЛЯЕМ ТОЛЬКО СТАРЫЙ ПОИСК ПО ХАРАКТЕРИСТИКАМ --- #
 # class ProductSearchForm(forms.Form):
@@ -235,11 +569,6 @@ def create_proposal(request):
 def proposal_history(request):
     queries = SearchQuery.objects.order_by('-created_at').prefetch_related('proposals')[:100]
     return render(request, 'products/proposal_history.html', {'queries': queries})
-
-# Инициализация QueryProcessor (без DataLoader)
-query_cache = QueryCache()
-# Используем QueryProcessor без data_loader
-query_processor = QueryProcessor(query_cache) # Убираем None
 
 # Форма и view для ИИ-поиска (остаются)
 class AIProductSearchForm(forms.Form):
@@ -437,3 +766,53 @@ def client_request_to_proposal(request):
 
     logger.info(f"Rendering template 'client_request.html' with result='{result}', error='{error}'")
     return render(request, 'products/client_request.html', {'form': form, 'result': result, 'error': error})
+
+def faq(request):
+    return render(request, 'products/faq.html')
+
+@csrf_exempt
+def upload_price_list_simple(request):
+    if request.method == 'POST':
+        form = PriceListUploadForm(request.POST, request.FILES)
+        if form.is_valid():
+            uploaded_file = request.FILES['file']
+            supplier_name = request.POST.get('supplier_name') or 'Неизвестный поставщик'
+            try:
+                file_ext = os.path.splitext(uploaded_file.name)[1].lower()
+                if file_ext in ['.xlsx', '.xls']:
+                    df = pd.read_excel(uploaded_file)
+                elif file_ext == '.csv':
+                    df = pd.read_csv(uploaded_file)
+                else:
+                    messages.error(request, f'Неподдерживаемый формат файла: {file_ext}')
+                    return render(request, 'products/upload_price_list.html', {'form': form})
+                created_count = 0
+                skipped_count = 0
+                for idx, row in df.iterrows():
+                    name = str(row.get('Наименование изделия', '') or row.get('Наименование товара', '') or row.get('Наименование', '')).strip()
+                    price = row.get('Цена руб.') or row.get('Цена (руб)') or row.get('Цена')
+                    if not name or pd.isna(price):
+                        skipped_count += 1
+                        continue
+                    try:
+                        price_val = float(price)
+                    except Exception:
+                        skipped_count += 1
+                        continue
+                    Product.objects.create(
+                        supplier=Supplier.objects.get_or_create(name=supplier_name)[0],
+                        name=name,
+                        price=price_val,
+                        stock=100
+                    )
+                    created_count += 1
+                messages.success(request, f'Прайс-лист успешно загружен. Добавлено {created_count} товаров, пропущено {skipped_count} строк.')
+                return redirect('upload_price_list_simple')
+            except Exception as e:
+                messages.error(request, f'Ошибка обработки файла: {e}')
+                return render(request, 'products/upload_price_list.html', {'form': form})
+        else:
+            messages.error(request, 'Форма заполнена неверно.')
+    else:
+        form = PriceListUploadForm()
+    return render(request, 'products/upload_price_list.html', {'form': form})

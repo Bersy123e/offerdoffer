@@ -1,0 +1,33 @@
+{% extends 'products/base_dashboard.html' %}
+{% block title %}FAQ / Помощь | Панель управления ООО «АРМАСЕТИ ИМПОРТ»{% endblock %}
+{% block content %}
+<h2 class="mb-4">FAQ / Помощь</h2>
+<ul class="list-group mb-4">
+  <li class="list-group-item"><a href="{% url 'home' %}" class="btn btn-link">Главная панель</a> — быстрый доступ ко всем разделам</li>
+  <li class="list-group-item"><a href="{% url 'upload_price_list_simple' %}" class="btn btn-link">Загрузка прайс-листа</a> — добавить или обновить товары</li>
+  <li class="list-group-item"><a href="{% url 'ai_product_search' %}" class="btn btn-link">ИИ-поиск</a> — умный подбор товаров по описанию</li>
+  <li class="list-group-item"><a href="{% url 'client_request_to_proposal' %}" class="btn btn-link">Составить КП</a> — загрузить запрос клиента и получить КП</li>
+  <li class="list-group-item"><a href="{% url 'proposal_history' %}" class="btn btn-link">История КП</a> — просмотр и скачивание ранее сгенерированных КП</li>
+  <li class="list-group-item"><a href="/admin/" class="btn btn-link">Админка</a> — управление товарами, поставщиками и пользователями</li>
+</ul>
+<hr>
+<h4 class="mb-3">Часто задаваемые вопросы</h4>
+<ol>
+  <li><b>Как загрузить прайс-лист?</b><br>
+    Перейдите в раздел <a href="{% url 'upload_price_list_simple' %}">Загрузка прайс-листа</a>, выберите файл Excel или CSV, укажите поставщика и нажмите «Загрузить».
+  </li>
+  <li><b>Как воспользоваться ИИ-поиском?</b><br>
+    В разделе <a href="{% url 'ai_product_search' %}">ИИ-поиск</a> введите описание товара или характеристики — система подберёт подходящие позиции.
+  </li>
+  <li><b>Как составить коммерческое предложение (КП)?</b><br>
+    В разделе <a href="{% url 'client_request_to_proposal' %}">Составить КП</a> загрузите файл или введите текст запроса клиента, затем скачайте готовое КП.
+  </li>
+  <li><b>Где посмотреть историю КП?</b><br>
+    В разделе <a href="{% url 'proposal_history' %}">История КП</a> доступны все ранее сгенерированные предложения.
+  </li>
+  <li><b>Как попасть в админку?</b><br>
+    Перейдите по ссылке <a href="/admin/">Админка</a> и войдите под своей учетной записью.
+  </li>
+</ol>
+<p style="color:#888; font-size:0.95em; margin-top:2em;">Если остались вопросы — обратитесь к вашему администратору или разработчику.</p>
+{% endblock %} 

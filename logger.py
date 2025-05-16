@@ -47,8 +47,8 @@ def setup_logger(
         
         # Create file handler with UTF-8 encoding
         file_handler = RotatingFileHandler(
-            log_file,
-            maxBytes=max_bytes,
+            log_file, 
+            maxBytes=max_bytes, 
             backupCount=backup_count,
             encoding='utf-8'
         )

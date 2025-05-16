@@ -1,15 +1,163 @@
-{% extends 'admin/base_site.html' %}
-{% block content %}
-  <h1>Панель коммерческих предложений</h1>
-  <p>Добро пожаловать в систему автоматизации КП для сантехнического оборудования.<br>
-  Выберите нужный раздел:</p>
-  <ul style="font-size:1.2em;">
-    <li><a href="{% url 'upload_price_list' %}"><b>Загрузка прайс-листа</b></a> — добавить или обновить товары от поставщиков</li>
-    <li><a href="{% url 'ai_product_search' %}"><b>ИИ-поиск</b></a> — умный подбор товаров через нейросеть (GPT-4o)</li>
-    <li><a href="{% url 'client_request_to_proposal' %}"><b>Составить КП / Проверить наличие по файлу или тексту</b></a> — загрузить запрос клиента и получить готовое КП</li>
-    <li><a href="{% url 'proposal_history' %}"><b>История КП</b></a> — просмотр и скачивание ранее сгенерированных коммерческих предложений</li>
-    <li><a href="/admin/"><b>Админка</b></a> — управление товарами, поставщиками и пользователями</li>
-  </ul>
-  <hr>
-  <p style="color: #888; font-size:0.9em;">Система разработана для ООО &laquo;АРМАСЕТИ ИМПОРТ&raquo;. Все действия логируются.</p>
-{% endblock %} 
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Панель управления ООО «АРМАСЕТИ ИМПОРТ»</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
+  <style>
+    body { font-family: 'Inter', Arial, sans-serif; background: #f6f8fa; }
+    .main-header {
+      background: #2563eb;
+      color: #fff;
+      padding: 32px 0 18px 0;
+      text-align: center;
+      font-size: 2.1em;
+      font-weight: 700;
+      letter-spacing: 0.01em;
+      margin-bottom: 32px;
+      box-shadow: 0 2px 12px rgba(60,80,180,0.07);
+    }
+    .dashboard-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 32px;
+      justify-content: center;
+      margin-bottom: 32px;
+    }
+    .dashboard-card {
+      background: #fff;
+      border-radius: 18px;
+      box-shadow: 0 4px 24px rgba(60,80,180,0.10), 0 1.5px 6px rgba(0,0,0,0.04);
+      border: none;
+      min-width: 300px;
+      max-width: 340px;
+      flex: 1 1 320px;
+      transition: box-shadow 0.22s, transform 0.18s;
+      text-align: center;
+      padding: 36px 24px 28px 24px;
+      cursor: pointer;
+    }
+    .dashboard-card:hover {
+      box-shadow: 0 8px 32px rgba(60,80,180,0.18), 0 2px 8px rgba(0,0,0,0.07);
+      transform: translateY(-4px) scale(1.025);
+    }
+    .dashboard-link {
+      text-decoration: none;
+      color: #222;
+      display: block;
+    }
+    .dashboard-link:focus, .dashboard-link:active {
+      outline: none;
+      box-shadow: 0 0 0 2px #2563eb33;
+    }
+    .dashboard-icon {
+      width: 56px; height: 56px;
+      margin: 0 auto 16px auto;
+      display: flex; align-items: center; justify-content: center;
+      background: #e3eafc;
+      border-radius: 14px;
+      font-size: 2.2em;
+      color: #2563eb;
+      transition: background 0.2s, color 0.2s;
+    }
+    .dashboard-card:hover .dashboard-icon {
+      background: #2563eb;
+      color: #fff;
+    }
+    .dashboard-title {
+      font-size: 1.18em;
+      font-weight: 600;
+      margin-top: 8px;
+      margin-bottom: 6px;
+      letter-spacing: 0.01em;
+    }
+    .dashboard-desc {
+      color: #5a6a8a;
+      font-size: 1em;
+      margin-bottom: 0;
+    }
+    @media (max-width: 900px) {
+      .dashboard-grid { flex-direction: column; gap: 18px; }
+      .dashboard-card { max-width: 100%; }
+    }
+    .footer-bar {
+      margin-top: 3em;
+      padding: 1.2em 0 0.5em 0;
+      color: #8a99b3;
+      font-size: 1em;
+      text-align: center;
+      border-top: 1px solid #e3eafc;
+      background: transparent;
+    }
+  </style>
+</head>
+<body>
+  <div class="main-header">
+    Панель управления ООО «АРМАСЕТИ ИМПОРТ»
+  </div>
+  <div class="container">
+    <p class="text-center" style="color:#5a6a8a; font-size:1.1em; margin-bottom:1.5em;">Добро пожаловать! Выберите нужный раздел:</p>
+    <div class="dashboard-grid">
+      <a href="{% url 'upload_price_list_simple' %}" class="dashboard-link">
+        <div class="dashboard-card">
+          <div class="dashboard-icon">
+            <svg width="32" height="32" fill="none" xmlns="http://www.w3.org/2000/svg"><rect width="32" height="32" rx="8" fill="#2563eb" fill-opacity=".08"/><path d="M16 7v13m0 0l-5-5m5 5l5-5" stroke="#2563eb" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><rect x="7" y="21" width="18" height="4" rx="2" fill="#2563eb" fill-opacity=".15"/></svg>
+          </div>
+          <div class="dashboard-title">Загрузка прайс-листа</div>
+          <div class="dashboard-desc">Добавить или обновить товары от поставщиков (быстро)</div>
+        </div>
+      </a>
+      <a href="{% url 'ai_product_search' %}" class="dashboard-link">
+        <div class="dashboard-card">
+          <div class="dashboard-icon">
+            <svg width="32" height="32" fill="none" xmlns="http://www.w3.org/2000/svg"><rect width="32" height="32" rx="8" fill="#2563eb" fill-opacity=".08"/><circle cx="16" cy="16" r="7" stroke="#2563eb" stroke-width="2"/><rect x="13" y="13" width="6" height="6" rx="3" fill="#2563eb" fill-opacity=".15"/></svg>
+          </div>
+          <div class="dashboard-title">ИИ-поиск</div>
+          <div class="dashboard-desc">Умный подбор товаров через нейросеть (GPT-4o)</div>
+        </div>
+      </a>
+      <a href="{% url 'client_request_to_proposal' %}" class="dashboard-link">
+        <div class="dashboard-card">
+          <div class="dashboard-icon">
+            <svg width="32" height="32" fill="none" xmlns="http://www.w3.org/2000/svg"><rect width="32" height="32" rx="8" fill="#2563eb" fill-opacity=".08"/><path d="M10 22v-8a2 2 0 012-2h8a2 2 0 012 2v8" stroke="#2563eb" stroke-width="2"/><rect x="14" y="14" width="4" height="4" rx="2" fill="#2563eb" fill-opacity=".15"/></svg>
+          </div>
+          <div class="dashboard-title">Составить КП</div>
+          <div class="dashboard-desc">Загрузить запрос клиента и получить готовое КП</div>
+        </div>
+      </a>
+      <a href="{% url 'proposal_history' %}" class="dashboard-link">
+        <div class="dashboard-card">
+          <div class="dashboard-icon">
+            <svg width="32" height="32" fill="none" xmlns="http://www.w3.org/2000/svg"><rect width="32" height="32" rx="8" fill="#2563eb" fill-opacity=".08"/><rect x="10" y="10" width="12" height="12" rx="2" stroke="#2563eb" stroke-width="2"/><rect x="14" y="14" width="4" height="4" rx="2" fill="#2563eb" fill-opacity=".15"/></svg>
+          </div>
+          <div class="dashboard-title">История КП</div>
+          <div class="dashboard-desc">Просмотр и скачивание ранее сгенерированных КП</div>
+        </div>
+      </a>
+      <a href="{% url 'faq' %}" class="dashboard-link">
+        <div class="dashboard-card">
+          <div class="dashboard-icon">
+            <svg width="32" height="32" fill="none" xmlns="http://www.w3.org/2000/svg"><rect width="32" height="32" rx="8" fill="#2563eb" fill-opacity=".08"/><path d="M16 12v4m0 4h.01" stroke="#2563eb" stroke-width="2" stroke-linecap="round"/><circle cx="16" cy="16" r="7" stroke="#2563eb" stroke-width="2"/></svg>
+          </div>
+          <div class="dashboard-title">FAQ / Помощь</div>
+          <div class="dashboard-desc">Ответы на частые вопросы и инструкции</div>
+        </div>
+      </a>
+      <a href="/admin/" class="dashboard-link">
+        <div class="dashboard-card">
+          <div class="dashboard-icon">
+            <svg width="32" height="32" fill="none" xmlns="http://www.w3.org/2000/svg"><rect width="32" height="32" rx="8" fill="#2563eb" fill-opacity=".08"/><path d="M12 20v-8m8 8v-8" stroke="#2563eb" stroke-width="2"/><rect x="14" y="14" width="4" height="4" rx="2" fill="#2563eb" fill-opacity=".15"/></svg>
+          </div>
+          <div class="dashboard-title">Админка</div>
+          <div class="dashboard-desc">Управление товарами, поставщиками и пользователями</div>
+        </div>
+      </a>
+    </div>
+    <div class="footer-bar">
+      <span style="font-size:0.95em;">Система автоматизации КП. Все действия логируются.</span>
+    </div>
+  </div>
+</body>
+</html> 

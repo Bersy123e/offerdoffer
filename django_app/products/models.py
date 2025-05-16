@@ -8,6 +8,10 @@ class Supplier(models.Model):
     contact_phone = models.CharField(max_length=50, blank=True, null=True)
     website = models.URLField(blank=True, null=True)
 
+    class Meta:
+        verbose_name = "Поставщик"
+        verbose_name_plural = "Поставщики"
+
     def __str__(self):
         return self.name
 
@@ -19,6 +23,10 @@ class Product(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    class Meta:
+        verbose_name = "Товар"
+        verbose_name_plural = "Товары"
+
     def __str__(self):
         return f"{self.name} ({self.supplier.name})"
 
@@ -27,6 +35,10 @@ class SearchQuery(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     result_count = models.IntegerField(default=0)
     proposals = models.ManyToManyField('Proposal', blank=True, related_name='search_queries')
+
+    class Meta:
+        verbose_name = "Поисковый запрос"
+        verbose_name_plural = "Поисковые запросы"
 
     def __str__(self):
         return f"{self.query_text[:50]}... ({self.created_at:%Y-%m-%d %H:%M})"
@@ -37,6 +49,10 @@ class Proposal(models.Model):
     products = models.ManyToManyField(Product, related_name='proposals')
     total_sum = models.DecimalField(max_digits=14, decimal_places=2, default=0)
 
+    class Meta:
+        verbose_name = "Предложение"
+        verbose_name_plural = "Предложения"
+
     def __str__(self):
         return f"КП от {self.created_at:%Y-%m-%d %H:%M} (ID: {self.id})"
 
@@ -45,6 +61,10 @@ class SearchCache(models.Model):
     results = models.JSONField()
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Кэш поиска"
+        verbose_name_plural = "Кэш поиска"
 
     def __str__(self):
         return f"Кэш: {self.query_text[:50]}..."

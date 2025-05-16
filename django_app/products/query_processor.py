@@ -8,6 +8,8 @@ from langchain_openai import ChatOpenAI
 from langchain.chains import LLMChain
 from langchain.prompts import PromptTemplate
 import os
+print("HTTP_PROXY:", os.environ.get("HTTP_PROXY"))
+print("HTTPS_PROXY:", os.environ.get("HTTPS_PROXY"))
 from django.db.models import Q
 import operator
 from functools import reduce
@@ -39,6 +41,16 @@ def extract_quantity(text: Optional[str]) -> Optional[int]:
             return None
     return None
 
+def normalize_dimensions(text: str) -> str:
+    """
+    Приводит размеры вида '57х5', '57 х 5', '57*5', '57 x 5', '57X5' к единому виду '57x5'.
+    Заменяет все варианты 'x', 'х', '*', с пробелами и без, на 'x' без пробелов.
+    """
+    if not text:
+        return text
+    # Заменяем кириллическую 'х' и латинскую 'x' и '*' на 'x', убираем пробелы вокруг
+    return re.sub(r'(\d+)\s*[xх*]\s*(\d+)', r'\1x\2', text, flags=re.IGNORECASE)
+
 class QueryProcessor:
     def __init__(self, query_cache: QueryCache):
         """
@@ -47,17 +59,39 @@ class QueryProcessor:
             query_cache: QueryCache instance for caching query results
         """
         self.query_cache = query_cache
+        # Используем gpt-4o-mini для экономии и скорости
+        self.llm_model_name = "gpt-4o-mini"
         self._initialize_llm()
     
     def _initialize_llm(self):
         """Initialize LangChain with OpenAI."""
         try:
             api_key = os.environ.get("OPENAI_API_KEY", "")
-            proxy_url = "http://niM1Bv1s:tbrA9EWJ@172.120.17.109:64192"
-            proxies = {"http://": proxy_url, "https://": proxy_url}
-            http_client = httpx.Client(proxies=proxies)
+            if not api_key:
+                logger.error("OPENAI_API_KEY not found in environment variables.")
+                raise ValueError("OPENAI_API_KEY is not set")
+                
+            proxy_url = os.environ.get("HTTP_PROXY") or os.environ.get("HTTPS_PROXY")
+            http_client_args = {}
+            if proxy_url:
+                logger.info(f"Using proxy: {proxy_url}")
+                proxies = {"http://": proxy_url, "https://": proxy_url}
+                http_client_args['proxies'] = proxies
             
-            # ОСТАВЛЯЕМ ТОЛЬКО ПРОМПТ ДЛЯ РАЗДЕЛЕНИЯ
+            # Создаем httpx.Client с настройками прокси, если они есть
+            http_client = httpx.Client(**http_client_args)
+            
+            # Передаем http_client в ChatOpenAI
+            self.llm = ChatOpenAI(
+                model_name=self.llm_model_name, 
+                openai_api_key=api_key, 
+                temperature=0, # Низкая температура для точности
+                http_client=http_client
+            )
+            logger.info(f"LLM ({self.llm_model_name}) initialized successfully.")
+            
+            # Оставляем split_chain и prompt для разделения запросов
+            # (хотя возможно стоит переделать на новые RunnableSequence)
             self.split_prompt = PromptTemplate(
                 input_variables=["query"],
                 template="""
@@ -80,36 +114,227 @@ class QueryProcessor:
                 Ответ:
                 """ # Используем двойные фигурные скобки для literal braces
             )
-            
-            # Инициализируем LLM
-            self.llm = ChatOpenAI(
-                temperature=0, 
-                model_name="gpt-4o-mini",
-                openai_api_key=api_key,
-                http_client=http_client
-            )
-            
-            # ОСТАВЛЯЕМ ТОЛЬКО ЦЕПОЧКУ ДЛЯ РАЗДЕЛЕНИЯ
+            # TODO: Переделать LLMChain на новый синтаксис prompt | llm
             self.split_chain = LLMChain(llm=self.llm, prompt=self.split_prompt)
             
-            logger.info("LLM initialized successfully (only split_chain is active)")
-            
+        except ValueError as ve:
+             logger.error(f"Value error during LLM initialization: {ve}")
+             self.llm = None # Устанавливаем в None, чтобы проверить позже
         except Exception as e:
-            logger.error(f"Error initializing LLM: {str(e)}")
-            raise
-    
+            logger.exception(f"Failed to initialize LLM: {e}")
+            self.llm = None # Устанавливаем в None, чтобы проверить позже
+            
+    def _fallback_keyword_mapping(self, headers: list) -> Optional[dict]:
+        """
+        Пытается определить маппинг по ключевым словам в заголовках.
+        """
+        mapping = {
+            "name": None,
+            "price": None,
+            "stock": None,
+            "article": None
+        }
+        
+        header_keywords = {
+            "name": ['наимен', 'товар', 'продукт', 'описан', 'позиц', 'name', 'product', 'item', 'description'],
+            "price": ['цена', 'стоим', 'прайс', 'price', 'cost', 'value'],
+            "stock": ['кол-во', 'остат', 'наличие', 'склад', 'баланс', 'stock', 'quantity', 'qty', 'amount', 'balance', 'available'],
+            "article": ['артикул', 'код', 'sku', 'id', 'номер', 'article', 'code']
+        }
+        
+        assigned_headers = set()
+
+        # Сначала ищем точные совпадения или приоритетные слова
+        for standard_name, keywords in header_keywords.items():
+            best_match = None
+            for header in headers:
+                if header is None or header in assigned_headers:
+                    continue
+                header_lower = str(header).lower().strip()
+                # Ищем полное совпадение или слово целиком
+                if any(f'\b{kw}\b' in header_lower for kw in keywords) or header_lower in keywords:
+                     # Простое совпадение по приоритетным словам
+                     if standard_name == "price" and "цена" in header_lower:
+                          best_match = header
+                          break # Нашли "цена", больше не ищем цену
+                     if standard_name == "name" and ("наимен" in header_lower or "товар" in header_lower):
+                          best_match = header
+                          break # Нашли "наименование" или "товар"
+                     if standard_name == "stock" and ("кол-во" in header_lower or "остат" in header_lower or "наличи" in header_lower):
+                           best_match = header
+                           break # Нашли количество/остаток/наличие
+                     if standard_name == "article" and ("артикул" in header_lower or "код" in header_lower or "\bsku\b" in header_lower):
+                           best_match = header
+                           break # Нашли артикул/код/sku
+                     # Если нет приоритетных, запоминаем первое совпадение
+                     if best_match is None:
+                         best_match = header
+
+            if best_match:
+                mapping[standard_name] = best_match
+                assigned_headers.add(best_match)
+                
+        # Если что-то не нашли, пробуем найти по частичному совпадению (менее надежно)
+        for standard_name, keywords in header_keywords.items():
+             if mapping[standard_name] is None: # Ищем только для ненайденных
+                 best_match = None
+                 for header in headers:
+                     if header is None or header in assigned_headers:
+                         continue
+                     header_lower = str(header).lower().strip()
+                     if any(kw in header_lower for kw in keywords):
+                         best_match = header # Берем первое попавшееся не занятое
+                         break
+                 if best_match:
+                     mapping[standard_name] = best_match
+                     assigned_headers.add(best_match)
+
+        # Проверяем, найдены ли хотя бы имя и цена
+        if not mapping.get("name") or not mapping.get("price"):
+            logger.warning(f"Fallback mapping failed to find essential fields 'name' or 'price'. Headers: {headers}")
+            return None
+            
+        logger.info(f"Fallback keyword mapping successful: {mapping}")
+        return mapping
+
+    def get_column_mapping(self, header_row: list, sample_rows: list[list]) -> Optional[dict]:
+        """
+        Uses LLM or fallback keyword matching to determine the column mapping.
+        Returns mapping dict or None if both methods fail.
+        """
+        # --- Попытка 1: LLM ---
+        if self.llm:
+            # Преобразуем данные в строку для промпта
+            header_str = "\t".join(map(str, header_row))
+            sample_rows_str = "\n".join(["\t".join(map(str, row)) for row in sample_rows])
+            file_fragment = f"Headers:\n{header_str}\n\nSample data:\n{sample_rows_str}"
+            
+            # Определяем стандартные поля, которые ищем
+            standard_fields = { # Ключ: Описание для LLM
+                "name": "Наименование товара (полное название, марка, тип, ГОСТ, характеристики)",
+                "price": "Цена (розничная, оптовая, с НДС или без - любая цена)",
+                "stock": "Остаток на складе (количество, наличие, 'в наличии', 'под заказ')",
+                "article": "Артикул (код товара, SKU, номенклатурный номер)",
+                 # Добавь сюда другие важные поля, если они есть
+                 # "unit": "Единица измерения (шт, кг, м, т)"
+            }
+            
+            field_descriptions = "\n".join([f"- {k}: {v}" for k, v in standard_fields.items()])
+            
+            prompt = f"""
+            ЗАДАЧА: Проанализируй фрагмент прайс-листа (заголовки и первые строки с данными) и определи, какие колонки соответствуют нужным нам стандартным полям.
+            Стандартные поля, которые мы ищем:
+            {field_descriptions}
+
+            ФРАГМЕНТ ПРАЙС-ЛИСТА:
+            {file_fragment}
+
+            ТРЕБОВАНИЯ К ОТВЕТУ:
+            1. Верни ТОЛЬКО валидный JSON-объект.
+            2. Ключи JSON-объекта - это наши стандартные имена полей ({', '.join(standard_fields.keys())}).
+            3. Значения JSON-объекта - это ТОЧНЫЕ названия колонок из ФРАГМЕНТА ПРАЙС-ЛИСТА.
+            4. Если для стандартного поля не нашлось подходящей колонки, используй значение null (не строку "null").
+            5. Если для одного стандартного поля подходят НЕСКОЛЬКО колонок, выбери САМУЮ ПОДХОДЯЩУЮ (например, для 'price' выбери розничную цену, если есть и оптовая).
+            6. НЕ ПРИДУМЫВАЙ колонки, которых нет в заголовках.
+
+            ПРИМЕР ОТВЕТА:
+            {{
+              "name": "Наименование товара",
+              "price": "Цена розн.",
+              "stock": "Остаток",
+              "article": "Артикул"
+            }}
+            ИЛИ (если что-то не найдено):
+            {{
+              "name": "Номенклатура",
+              "price": "Стоимость",
+              "stock": null,
+              "article": "Код"
+            }}
+
+            JSON-ОТВЕТ:
+            """
+            
+            logger.info(f"Sending request to LLM ({self.llm_model_name}) for column mapping. Header: {header_str}")
+            response = self.llm.invoke(prompt)
+            response_text = response.content.strip()
+            logger.info(f"LLM response for mapping: {response_text}")
+            
+            # Пытаемся извлечь JSON из ответа
+            json_str = None
+            match_block = re.search(r"```json\s*([\s\S]*?)\s*```", response_text, re.IGNORECASE)
+            match_plain = re.search(r"^\s*{\s*[\s\S]*?\s*}\s*$", response_text) # Если JSON без ```
+            
+            if match_block:
+                json_str = match_block.group(1).strip()
+            elif match_plain:
+                 json_str = response_text
+            else:
+                 logger.warning("Could not find JSON block in LLM response for mapping.")
+                 # Попытка найти JSON хоть как-то (менее надежно)
+                 start_index = response_text.find('{')
+                 end_index = response_text.rfind('}')
+                 if start_index != -1 and end_index != -1 and end_index > start_index:
+                      json_str = response_text[start_index:end_index+1]
+            
+            if json_str:
+                try:
+                    mapping = json.loads(json_str)
+                    validated_mapping = {}
+                    valid_headers = set(str(h) for h in header_row if h is not None) # Приводим к строке
+                    
+                    # Сначала заполняем тем, что вернул LLM
+                    for standard_name, file_header in mapping.items():
+                         if standard_name in standard_fields:
+                             file_header_str = str(file_header) if file_header is not None else None
+                             if file_header_str is None:
+                                 validated_mapping[standard_name] = None
+                             elif file_header_str in valid_headers:
+                                 validated_mapping[standard_name] = file_header # Сохраняем исходное значение
+                             else:
+                                 logger.warning(f"LLM returned header '{file_header}' for '{standard_name}' which is not in the original headers {list(valid_headers)}. Ignoring.")
+                                 validated_mapping[standard_name] = None
+                         else:
+                             logger.warning(f"LLM returned unknown standard field '{standard_name}'. Ignoring.")
+                             
+                    # Добавляем стандартные поля, которые LLM мог пропустить
+                    for field in standard_fields:
+                        if field not in validated_mapping:
+                            validated_mapping[field] = None
+                            
+                    # Проверяем, найдены ли хотя бы имя и цена
+                    if validated_mapping.get("name") and validated_mapping.get("price"):
+                        logger.info(f"Successfully obtained and validated column mapping from LLM: {validated_mapping}")
+                        return validated_mapping
+                    else:
+                        logger.warning("LLM failed to map essential fields 'name' or 'price'. Trying fallback.")
+                        # LLM не справился, дальше попробуем fallback
+
+                except json.JSONDecodeError as e:
+                    logger.error(f"Failed to decode JSON from LLM response for mapping: {e}. Trying fallback.")
+                    # Ошибка JSON, дальше попробуем fallback
+            else:
+                logger.error("Could not extract JSON string from LLM response for mapping. Trying fallback.")
+                # Нет JSON, дальше попробуем fallback
+            
+        # --- Попытка 2: Fallback на ключевые слова ---
+        logger.info("Attempting fallback keyword mapping.")
+        fallback_mapping = self._fallback_keyword_mapping(header_row)
+        
+        if fallback_mapping:
+            return fallback_mapping
+        else:
+            # Обе попытки провалились
+            logger.error("Both LLM and fallback keyword mapping failed.")
+            return None
+
     def process_query(self, query: str) -> List[Product]:
         """
-        Process a natural language query and return matching products.
-        1. Search for products containing ANY keywords (OR search).
-        2. Score each found product based on keyword matches (specific keywords get more weight).
-        3. Give a large BONUS score if ALL specific keywords are present.
-        4. Filter results: prioritize bonus score, otherwise take max normal score.
-        CACHE IS TEMPORARILY DISABLED FOR DEBUGGING.
+        Process a natural language query and return ALL matching products (OR search, без скоринга).
         """
         try:
             logger.info(f"Processing query: {query}")
-            # КЭШ ВРЕМЕННО ОТКЛЮЧЕН
+            query = normalize_dimensions(query)
             prompt = f"""
             ЗАДАЧА: Извлечь из текста ТОЧНЫЕ ключевые слова для поиска товара в базе по полю 'name'.
             ПРАВИЛА:
@@ -146,36 +371,19 @@ class QueryProcessor:
                         keywords = json.loads(match.group(0))
                     except Exception:
                          logger.warning(f"Could not parse JSON from LLM response: {text}")
-                         # Fallback if JSON parsing fails after finding brackets
                          keywords = [kw.strip() for kw in query.split() if kw.strip()]
                 else:
                     logger.warning(f"Could not find JSON in LLM response: {text}")
-                    # Fallback if no JSON detected
                     keywords = [kw.strip() for kw in query.split() if kw.strip()]
-            
             keywords = [kw for kw in keywords if kw and isinstance(kw, str)]
-
-            # --- Fallback if LLM returns empty keywords ---
             if not keywords:
                 logger.warning(f"LLM returned empty keywords for query '{query}'. Falling back to splitting query text.")
-                # Attempt to remove quantity/units again, just in case
                 cleaned_query = re.sub(r'\d+\s*(?:шт|штук|компл)\b', '', query, flags=re.IGNORECASE).strip()
-                cleaned_query = re.sub(r'\b\d+\s*$', '', cleaned_query).strip() # Remove trailing number if it's likely quantity
-                # Split remaining text into words as keywords
+                cleaned_query = re.sub(r'\b\d+\s*$', '', cleaned_query).strip()
                 keywords = [kw.strip() for kw in cleaned_query.split() if kw.strip() and kw.lower() not in ["нужен", "в", "количестве", "для", "под", "и", "с", "еще", "шт", "штук", "компл"]]
-                if keywords:
-                     logger.info(f"Using fallback keywords: {keywords}")
-                else:
-                     logger.warning("Fallback keyword generation also resulted in empty list.")
-                     # As a last resort, maybe use the original query? Or return empty? Let's use original for now.
-                     keywords = [query] if query else []
-                     logger.info(f"Using original query as last resort keyword: {keywords}")
-            # --- End Fallback ---
-
+                if not keywords:
+                    keywords = [query] if query else []
             logger.info(f"Using keywords: {keywords}")
-            generic_keywords_set = {'редуктор', 'отвод', 'задвижка', 'фланец', 'переход', 'тройник', 'заглушка'}
-            specific_keywords = [kw for kw in keywords if kw.lower() not in generic_keywords_set]
-            logger.info(f"Specific keywords: {specific_keywords}")
             if keywords:
                 escaped_keywords = [re.escape(kw) for kw in keywords]
                 q_objects = [Q(name__iregex=kw) for kw in escaped_keywords]
@@ -187,66 +395,18 @@ class QueryProcessor:
                     logger.error(f"Could not log SQL query: {sql_err}")
             else:
                 qs = Product.objects.none()
-            initial_results = list(qs)
-            logger.info(f"Found {len(initial_results)} initial products by OR search.")
-            scored_results = []
-            if initial_results and keywords:
-                logger.info("--- Start Scoring --- ")
-                bonus_score_value = 100
-                for product in initial_results:
-                    score = 0
-                    bonus_achieved = False
-                    product_name_lower = product.name.lower()
-                    matching_kws_details = []
-                    specific_matches_count = 0
-                    for kw in keywords:
-                        kw_lower = kw.lower()
-                        if re.search(re.escape(kw_lower), product_name_lower):
-                            weight = 3 if kw_lower not in generic_keywords_set else 1
-                            score += weight
-                            matching_kws_details.append(f"'{kw}'(w:{weight})")
-                            if kw_lower not in generic_keywords_set:
-                                specific_matches_count += 1
-                    if specific_keywords and specific_matches_count == len(specific_keywords):
-                         all_specific_present_for_bonus = True
-                         for spec_kw in specific_keywords:
-                              if not re.search(re.escape(spec_kw.lower()), product_name_lower):
-                                  all_specific_present_for_bonus = False
-                                  break
-                         if all_specific_present_for_bonus:
-                              score += bonus_score_value
-                              bonus_achieved = True
-                              logger.info(f"Product ID {product.id} got BONUS score (+{bonus_score_value})")
-                    if score > 0:
-                      scored_results.append({"product": product, "score": score, "bonus": bonus_achieved})
-                      logger.info(f"Product ID {product.id} Name: '{product.name[:50]}...' Score: {score} (Bonus: {bonus_achieved}) (Matches: {', '.join(matching_kws_details)})")
-                    else:
-                       logger.info(f"Product ID {product.id} Name: '{product.name[:50]}...' Score: 0")
-                logger.info("--- End Scoring --- ")
-            final_results = []
-            if scored_results:
-                scored_results.sort(key=lambda item: item["score"], reverse=True)
-                bonus_items = [item for item in scored_results if item["bonus"]]
-                if bonus_items:
-                    logger.info(f"Found {len(bonus_items)} products with BONUS score. Selecting the highest score among them.")
-                    max_bonus_score = bonus_items[0]["score"]
-                    final_results = [item["product"] for item in bonus_items if item["score"] == max_bonus_score]
-                    logger.info(f"Returning {len(final_results)} products with max bonus score ({max_bonus_score}).")
-                else:
-                    max_normal_score = scored_results[0]["score"]
-                    logger.info(f"No bonus products. Max normal score is {max_normal_score}. Filtering by this score.")
-                    final_results = [item["product"] for item in scored_results if item["score"] == max_normal_score]
-                    logger.info(f"Returning {len(final_results)} products with max normal score.")
-            else:
-                 logger.info("No products scored > 0. Returning empty list.")
-            logger.info(f"Returning {len(final_results)} final products.")
-            return final_results
+            results = list(qs)
+            logger.info(f"Found {len(results)} products by OR search. Returning all.")
+            return results
         except Exception as e:
             logger.error(f"Error processing query: {str(e)}")
             raise
     
     def split_query_into_items(self, full_query: str) -> List[Dict[str, Any]]:
-        """Splits a full query text into individual item queries and quantities using LLM."""
+        """
+        Splits a full query text into individual item queries and quantities using LLM.
+        """
+        full_query = normalize_dimensions(full_query)
         items = []
         try:
             logger.info(f"Attempting to split query using LLM: {full_query[:100]}...")
@@ -323,104 +483,115 @@ class QueryProcessor:
         return items
 
     def extract_products_from_table(self, table_rows: list) -> list:
-        prompt = (
-            """
-            ЗАДАЧА: Извлечь данные о товарах из строк таблицы прайс-листа. Каждая строка - потенциальный товар. Иногда над товарами есть строки-заголовки.
+        logger.info("extract_products_from_table CALLED")
+        prompt = """
+            ЗАДАЧА: Извлечь данные о товарах из строк таблицы прайс-листа. КАЖДАЯ строка (даже если не похожа на товар) должна быть отражена в результате!
             ПРАВИЛА:
-            1. Для каждой строки, которая является товаром, вернуть JSON-объект ТОЛЬКО с полями: "supplier", "name", "price", "stock".
+            1. Для КАЖДОЙ строки вернуть JSON-объект с полями: 'supplier', 'name', 'price', 'stock'. Если поле не найдено — ставь null.
             2. supplier: Наименование поставщика (если есть столбец, иначе пусто).
-            3. name: ПОЛНОЕ наименование товара из соответствующего столбца. ЕСЛИ над строкой товара была строка-заголовок (например, 'Редукторы', 'Задвижки под привод'), ДОБАВЬ этот заголовок в НАЧАЛО наименования товара (например, "Редукторы Редуктор тип Б").
-            4. price: Цена товара. Ищи столбцы с названиями типа 'Цена', 'Price', 'Стоимость', 'Цена руб', 'Цена с НДС'. Извлекай ТОЛЬКО число (убирай валюту, 'руб', 'тг' и т.д.). Должно быть числом (целым или десятичным).
-            5. stock: Остаток товара на складе. Ищи столбцы типа 'Остаток', 'Кол-во', 'Наличие', 'Stock', 'Qty'. Извлекай ТОЛЬКО число (обычно целое). Если не найдено, ставь null или 100.
-            6. ТОЧНОСТЬ: Цена - это обычно число с копейками или без, остаток - обычно целое. Не путай их!
-            7. ИСКЛЮЧИТЬ: Пустые строки, строки с 'Итого', 'Всего', строки, где нет ни наименования, ни цены - это не товары.
-            8. ФОРМАТ: Верни ТОЛЬКО валидный JSON-массив объектов. Без текста до или после, без ```json ... ```.
-            
+            3. name: ПОЛНОЕ наименование товара из соответствующего столбца. Если был заголовок — добавь его в начало. Если не найдено — null.
+            4. price: Цена товара. Ищи любые столбцы с ценой ('Цена', 'Price', 'Стоимость', 'Цена руб', 'Цена с НДС'). Извлекай только число (убирай валюту, 'руб', 'тг' и т.д.). Если не найдено — null.
+            5. stock: Остаток товара на складе. Если не найдено — ставь 100.
+            6. ВКЛЮЧАЙ даже строки без цены и названия (пусть будут с null).
+            7. ФОРМАТ: Верни ТОЛЬКО валидный JSON-массив объектов. Без текста до или после, без ```json ... ```.
             ПРИМЕР СТРОКИ ИЗ ТАБЛИЦЫ:
             {'Наименование изделия': 'Редуктор тип Б', 'Ду (мм)': '50', 'Цена руб. Ру16': '17000', 'Остаток шт': 4}
             ОЖИДАЕМЫЙ JSON ОБЪЕКТ (если не было заголовка):
-            {{"supplier": "", "name": "Редуктор тип Б", "price": 17000, "stock": 4}}
-            
+            {\"supplier\": \"\", \"name\": \"Редуктор тип Б\", \"price\": 17000, \"stock\": 4}
             Таблица строк (JSON): {row}
             Ответ (ТОЛЬКО JSON-массив):
-            """
-        )
+        """
         results = []
         batch_size = 50 # Можно уменьшить для сложных таблиц
         current_header = "" # Для хранения последнего заголовка
         for i in range(0, len(table_rows), batch_size):
             batch = table_rows[i:i+batch_size]
-            # Определение заголовков внутри батча (упрощенное)
             processed_batch = []
             for row_dict in batch:
-                # Простая проверка на заголовок: мало колонок заполнено, нет цены/остатка?
                 filled_values = [v for v in row_dict.values() if pd.notna(v) and str(v).strip()]
                 potential_price = str(row_dict.get('price', '') or row_dict.get('Цена', '') or row_dict.get('Цена руб', '')).strip()
                 potential_stock = str(row_dict.get('stock', '') or row_dict.get('Остаток', '') or row_dict.get('Кол-во', '')).strip()
                 is_likely_header = len(filled_values) < 3 and not potential_price and not potential_stock and len(filled_values) > 0
-                
                 if is_likely_header:
-                    current_header = str(filled_values[0]).strip() # Берем первое непустое значение как заголовок
-                    logger.info(f"Detected header: {current_header}")
+                    current_header = str(filled_values[0]).strip()
                     processed_batch.append({"is_header": True, "header_text": current_header})
                 else:
-                    # Добавляем текущий заголовок к строке для контекста LLM
                     row_dict["_context_header"] = current_header
                     processed_batch.append(row_dict)
-            
             batch_text = json.dumps(processed_batch, ensure_ascii=False)
             full_prompt = prompt.replace('{row}', batch_text)
-            try:
-                response = self.llm.invoke(full_prompt)
-                text = response.content
-                logger.info(f"LLM response content (price list parse): {text[:500]}...")
-                json_str = None
-                match = re.search(r"```json\s*([\s\S]*?)\s*```", text, re.IGNORECASE)
-                if match:
-                    json_str = match.group(1).strip()
-                else:
-                    first_bracket = text.find('[')
-                    if first_bracket != -1:
-                       # Пытаемся найти закрывающую скобку
-                       brace_level = 0
-                       end_index = -1
-                       in_string = False
-                       for idx, char in enumerate(text[first_bracket:]):
-                           if char == '"' and (idx == 0 or text[first_bracket+idx-1] != '\\'):
-                               in_string = not in_string
-                           elif not in_string:
-                               if char == '[' or char == '{':
-                                   brace_level += 1
-                               elif char == ']' or char == '}':
-                                   brace_level -= 1
-                           if brace_level == 0 and char == ']': # Только когда нашли парную ] для первого [
-                               end_index = first_bracket + idx + 1
-                               break
-                       if end_index != -1:
-                           json_str = text[first_bracket:end_index]
-                       else: # Не нашли парную скобку
-                           json_str = text[first_bracket:] # Берем до конца, как раньше
-                    else: 
-                        json_str = None # Если не нашли даже [
-                
-                if json_str:
-                    try:
-                        batch_result = json.loads(json_str)
-                        if isinstance(batch_result, list):
-                            # Убираем поле _context_header перед добавлением
-                            cleaned_batch_result = []
-                            for item in batch_result:
-                                if isinstance(item, dict):
-                                   item.pop('_context_header', None)
-                                   cleaned_batch_result.append(item)
-                            results.extend(cleaned_batch_result)
-                        else:
-                            logger.warning(f"LLM returned non-list JSON: {json_str[:500]}...")
-                    except json.JSONDecodeError as json_err:
-                        logger.error(f"JSONDecodeError parsing LLM response: {json_err}. String: {json_str[:500]}...")
-                else:
-                    logger.error(f"Could not extract JSON block from LLM response: {text[:500]}...")
-            except Exception as e:
-                logger.error(f"LLM batch parse error: {e}")
-            time.sleep(1) # Пауза между батчами
+            logger.info(f"LLM PROMPT (extract_products_from_table): {full_prompt}")
+            response = self.llm.invoke(full_prompt)
+            text = response.content
+            logger.info(f"LLM RAW RESPONSE (extract_products_from_table): {text}")
+            json_str = None
+            match = re.search(r"```json\s*([\s\S]*?)\s*```", text, re.IGNORECASE)
+            if match:
+                json_str = match.group(1).strip()
+            else:
+                first_bracket = text.find('[')
+                if first_bracket != -1:
+                   brace_level = 0
+                   end_index = -1
+                   in_string = False
+                   for idx, char in enumerate(text[first_bracket:]):
+                       if char == '"' and (idx == 0 or text[first_bracket+idx-1] != '\\'):
+                           in_string = not in_string
+                       elif not in_string:
+                           if char == '[' or char == '{':
+                               brace_level += 1
+                           elif char == ']' or char == '}':
+                               brace_level -= 1
+                       if brace_level == 0 and char == ']':
+                           end_index = first_bracket + idx + 1
+                           break
+                   if end_index != -1:
+                       json_str = text[first_bracket:end_index]
+                   else:
+                       json_str = text[first_bracket:]
+                else: 
+                    json_str = None
+            if json_str:
+                try:
+                    batch_result = json.loads(json_str)
+                    if not batch_result or not isinstance(batch_result, list):
+                        logger.error(f"LLM batch_result is empty or not a list! batch_result={batch_result}, batch={batch_text}")
+                    if isinstance(batch_result, list):
+                        cleaned_batch_result = []
+                        for item in batch_result:
+                            if isinstance(item, dict):
+                                item.pop('_context_header', None)
+                                name = item.get('name')
+                                price = item.get('price')
+                                if price is not None and not isinstance(price, (int, float)):
+                                    price_str = str(price)
+                                    price_num = re.findall(r"[\d\.\,]+", price_str)
+                                    if price_num:
+                                        try:
+                                            price = float(price_num[0].replace(',', '.'))
+                                        except Exception:
+                                            price = 0
+                                    else:
+                                        price = 0
+                                if name is None and price is None:
+                                    continue # Совсем пустая строка — пропускаем
+                                if price is None:
+                                    price = 0
+                                stock = item.get('stock')
+                                try:
+                                    stock_val = int(stock) if stock is not None else 100
+                                except Exception:
+                                    stock_val = 100
+                                item['name'] = name if name is not None else ''
+                                item['price'] = price
+                                item['stock'] = stock_val
+                                cleaned_batch_result.append(item)
+                        results.extend(cleaned_batch_result)
+                    else:
+                        logger.warning(f"LLM returned non-list JSON: {json_str[:500]}...")
+                except json.JSONDecodeError as json_err:
+                    logger.error(f"JSONDecodeError parsing LLM response: {json_err}. String: {json_str[:500]}... Batch: {batch_text}")
+            else:
+                logger.error(f"Could not extract JSON block from LLM response: {text[:500]}... Batch: {batch_text}")
+            time.sleep(1)
         return results 

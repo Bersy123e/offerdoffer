@@ -1,17 +1,25 @@
-{% extends 'admin/base_site.html' %}
+{% extends 'products/base_dashboard.html' %}
+{% block title %}Составить КП | Панель управления ООО «АРМАСЕТИ ИМПОРТ»{% endblock %}
 {% block content %}
-  <h1>Составить КП или проверить наличие по запросу клиента</h1>
-  <form method="post" enctype="multipart/form-data">
-    {% csrf_token %}
-    {{ form.as_p }}
-    <button type="submit" class="default">Обработать запрос</button>
-  </form>
-  {% if error %}
-    <p style="color:red;">{{ error }}</p>
-  {% endif %}
-  {% if result %}
-    <p>{{ result }}</p>
-  {% endif %}
-  <hr>
-  <p style="color:#888; font-size:0.9em;">Поддерживаются форматы: docx, pdf, xlsx, txt. Можно также ввести текст вручную.</p>
+<h2 class="mb-4">Составить коммерческое предложение</h2>
+<form method="post" enctype="multipart/form-data" class="row g-3 mb-4">
+  {% csrf_token %}
+  <div class="col-md-8">
+    {{ form.text.label_tag }}
+    {{ form.text }}
+  </div>
+  <div class="col-md-4">
+    {{ form.file.label_tag }}
+    {{ form.file }}
+  </div>
+  <div class="col-12 mt-3">
+    <button type="submit" class="btn btn-primary btn-lg">Составить КП</button>
+  </div>
+</form>
+{% if error %}
+  <div class="alert alert-danger">{{ error }}</div>
+{% endif %}
+{% if result %}
+  <div class="alert alert-success">{{ result }}</div>
+{% endif %}
 {% endblock %} 

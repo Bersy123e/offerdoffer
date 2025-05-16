@@ -24,31 +24,31 @@ class DataLoader:
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
-                
-                # Create products table
-                cursor.execute('''
-                CREATE TABLE IF NOT EXISTS products (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    supplier TEXT,
-                    name TEXT,
-                    price REAL,
-                    stock INTEGER,
-                    category TEXT,
-                    diameter TEXT,
-                    material TEXT,
-                    pressure TEXT,
-                    execution TEXT,
-                    standard TEXT,
-                    additional_params TEXT
-                )
-                ''')
-                
-                # Create indices for faster searching
-                cursor.execute('CREATE INDEX IF NOT EXISTS idx_name ON products(name)')
-                cursor.execute('CREATE INDEX IF NOT EXISTS idx_category ON products(category)')
-                cursor.execute('CREATE INDEX IF NOT EXISTS idx_diameter ON products(diameter)')
-                cursor.execute('CREATE INDEX IF NOT EXISTS idx_material ON products(material)')
-                
+            
+            # Create products table
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS products (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                supplier TEXT,
+                name TEXT,
+                price REAL,
+                stock INTEGER,
+                category TEXT,
+                diameter TEXT,
+                material TEXT,
+                pressure TEXT,
+                execution TEXT,
+                standard TEXT,
+                additional_params TEXT
+            )
+            ''')
+            
+            # Create indices for faster searching
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_name ON products(name)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_category ON products(category)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_diameter ON products(diameter)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_material ON products(material)')
+            
                 conn.commit()
             logger.info("Database initialized successfully")
             
@@ -107,43 +107,43 @@ class DataLoader:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 
-                # Clear existing data
-                cursor.execute("DELETE FROM products")
+            # Clear existing data
+            cursor.execute("DELETE FROM products")
+            
+            # Process each row
+            products = []
+            for _, row in df.iterrows():
+                # Extract product name
+                product_name = row['Наименование товара']
                 
-                # Process each row
-                products = []
-                for _, row in df.iterrows():
-                    # Extract product name
-                    product_name = row['Наименование товара']
-                    
-                    # Extract characteristics using regex
-                    characteristics = self._extract_characteristics(product_name)
-                    
-                    # Create product record
-                    product = (
-                        row['Наименование поставщика'],
-                        product_name,
-                        float(row['Цена (руб)']),
-                        int(row['Остаток']),
-                        characteristics.get('category'),
-                        characteristics.get('diameter'),
-                        characteristics.get('material'),
-                        characteristics.get('pressure'),
-                        characteristics.get('execution'),
-                        characteristics.get('standard'),
-                        characteristics.get('additional_params')
-                    )
-                    products.append(product)
+                # Extract characteristics using regex
+                characteristics = self._extract_characteristics(product_name)
                 
-                # Batch insert
-                cursor.executemany('''
-                INSERT INTO products (
-                    supplier, name, price, stock, 
-                    category, diameter, material, pressure, 
-                    execution, standard, additional_params
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', products)
-                
+                # Create product record
+                product = (
+                    row['Наименование поставщика'],
+                    product_name,
+                    float(row['Цена (руб)']),
+                    int(row['Остаток']),
+                    characteristics.get('category'),
+                    characteristics.get('diameter'),
+                    characteristics.get('material'),
+                    characteristics.get('pressure'),
+                    characteristics.get('execution'),
+                    characteristics.get('standard'),
+                    characteristics.get('additional_params')
+                )
+                products.append(product)
+            
+            # Batch insert
+            cursor.executemany('''
+            INSERT INTO products (
+                supplier, name, price, stock, 
+                category, diameter, material, pressure, 
+                execution, standard, additional_params
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', products)
+            
                 conn.commit()
             logger.info(f"Loaded {len(products)} products into database")
             
@@ -235,11 +235,11 @@ class DataLoader:
             
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
-                cursor.execute(query, params)
-                
-                # Convert to list of dictionaries
-                columns = [col[0] for col in cursor.description]
-                products = [dict(zip(columns, row)) for row in cursor.fetchall()]
+            cursor.execute(query, params)
+            
+            # Convert to list of dictionaries
+            columns = [col[0] for col in cursor.description]
+            products = [dict(zip(columns, row)) for row in cursor.fetchall()]
             
             return products
             
@@ -249,4 +249,4 @@ class DataLoader:
     
     def close(self):
         """Close database connection."""
-        logger.info("Database connection closed") 
+            logger.info("Database connection closed") 

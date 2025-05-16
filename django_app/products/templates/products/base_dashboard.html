@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Панель управления ООО «АРМАСЕТИ ИМПОРТ»{% endblock %}</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
+  <style>
+    body { font-family: 'Inter', Arial, sans-serif; background: #f6f8fa; }
+    .custom-header {
+      background: #fff;
+      box-shadow: 0 2px 16px rgba(60,80,180,0.07);
+      border-radius: 0 0 22px 22px;
+      padding: 32px 0 18px 0;
+      margin-bottom: 0;
+      text-align: center;
+      position: relative;
+    }
+    .custom-header-title {
+      color: #2563eb;
+      font-size: 2.2em;
+      font-weight: 800;
+      letter-spacing: 0.01em;
+      margin-bottom: 0.2em;
+    }
+    .custom-nav {
+      display: flex;
+      justify-content: center;
+      gap: 18px;
+      margin-top: 18px;
+      flex-wrap: wrap;
+    }
+    .custom-nav-link {
+      color: #2563eb;
+      background: none;
+      border: none;
+      font-size: 1.08em;
+      font-weight: 500;
+      padding: 8px 22px;
+      border-radius: 18px;
+      transition: background 0.18s, color 0.18s;
+      text-decoration: none;
+      position: relative;
+      outline: none;
+      box-shadow: none;
+      margin-bottom: 2px;
+    }
+    .custom-nav-link.active, .custom-nav-link:focus, .custom-nav-link:hover {
+      background: #2563eb;
+      color: #fff;
+      text-decoration: none;
+      box-shadow: 0 2px 8px rgba(60,80,180,0.10);
+    }
+    .footer-bar {
+      margin-top: 3em;
+      padding: 1.2em 0 0.5em 0;
+      color: #8a99b3;
+      font-size: 1em;
+      text-align: center;
+      border-top: 1px solid #e3eafc;
+      background: transparent;
+    }
+    .dashboard-container {
+      max-width: 900px;
+      margin: 0 auto;
+      background: #fff;
+      border-radius: 18px;
+      box-shadow: 0 4px 24px rgba(60,80,180,0.10), 0 1.5px 6px rgba(0,0,0,0.04);
+      padding: 36px 32px 32px 32px;
+      margin-bottom: 32px;
+    }
+    @media (max-width: 900px) {
+      .dashboard-container { padding: 18px 6px; }
+      .custom-header-title { font-size: 1.3em; }
+      .custom-nav-link { font-size: 1em; padding: 8px 10px; }
+    }
+  </style>
+  {% block extra_head %}{% endblock %}
+</head>
+<body>
+  <header class="custom-header mb-4">
+    <div class="custom-header-title">ООО «АРМАСЕТИ ИМПОРТ»</div>
+    <nav class="custom-nav mt-2">
+      <a class="custom-nav-link{% if request.resolver_match.url_name == 'home' %} active{% endif %}" href="{% url 'home' %}">Главная</a>
+      <a class="custom-nav-link{% if request.resolver_match.url_name == 'upload_price_list' %} active{% endif %}" href="{% url 'upload_price_list' %}">Загрузка прайса</a>
+      <a class="custom-nav-link{% if request.resolver_match.url_name == 'ai_product_search' %} active{% endif %}" href="{% url 'ai_product_search' %}">ИИ-поиск</a>
+      <a class="custom-nav-link{% if request.resolver_match.url_name == 'client_request_to_proposal' %} active{% endif %}" href="{% url 'client_request_to_proposal' %}">Составить КП</a>
+      <a class="custom-nav-link{% if request.resolver_match.url_name == 'proposal_history' %} active{% endif %}" href="{% url 'proposal_history' %}">История КП</a>
+      <a class="custom-nav-link{% if request.resolver_match.url_name == 'faq' %} active{% endif %}" href="{% url 'faq' %}">FAQ</a>
+      <a class="custom-nav-link" href="/admin/">Админка</a>
+    </nav>
+  </header>
+  <div class="dashboard-container">
+    {% block content %}{% endblock %}
+  </div>
+  <div class="footer-bar">
+    <span style="font-size:0.95em;">Система автоматизации КП. Все действия логируются.</span>
+  </div>
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html> 

@@ -1,0 +1,39 @@
+{% extends 'products/base_dashboard.html' %}
+
+{% block title %}Ручной маппинг | Панель управления ООО «АРМАСЕТИ ИМПОРТ»{% endblock %}
+
+{% block content %}
+<h2 class="mb-4">Ручной выбор колонок для загрузки прайса</h2>
+<form method="post" class="row g-3 mb-4">
+  {% csrf_token %}
+  {{ form.file_path }}
+  {{ form.supplier_id }}
+  <div class="col-md-6">
+    {{ form.name_col.label_tag }}
+    {{ form.name_col|add_class:'form-select' }}
+  </div>
+  <div class="col-md-6">
+    {{ form.price_col.label_tag }}
+    {{ form.price_col|add_class:'form-select' }}
+  </div>
+  <div class="col-md-6">
+    {{ form.stock_col.label_tag }}
+    {{ form.stock_col|add_class:'form-select' }}
+  </div>
+  <div class="col-md-6">
+    {{ form.article_col.label_tag }}
+    {{ form.article_col|add_class:'form-select' }}
+  </div>
+  <div class="col-12 mt-3">
+    <button type="submit" class="btn btn-primary btn-lg">Продолжить загрузку</button>
+    <a href="{% url 'upload_price_list' %}" class="btn btn-secondary btn-lg ms-2">Отмена</a>
+  </div>
+</form>
+{% if messages %}
+  <div class="mb-3">
+    {% for message in messages %}
+      <div class="alert alert-{{ message.tags }}">{{ message }}</div>
+    {% endfor %}
+  </div>
+{% endif %}
+{% endblock %} 

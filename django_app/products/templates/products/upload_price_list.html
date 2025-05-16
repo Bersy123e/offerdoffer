@@ -1,16 +1,32 @@
-{% extends 'admin/base_site.html' %}
+{% extends 'products/base_dashboard.html' %}
+{% block title %}Загрузка прайс-листа | Панель управления ООО «АРМАСЕТИ ИМПОРТ»{% endblock %}
 {% block content %}
-  <h1>Загрузка прайс-листа</h1>
-  <form method="post" enctype="multipart/form-data">
-    {% csrf_token %}
-    {{ form.file.label_tag }} {{ form.file }}
-    <button type="submit" class="default">Загрузить</button>
-  </form>
-  {% if messages %}
-    <ul class="messages">
-      {% for message in messages %}
-        <li{% if message.tags %} class="{{ message.tags }}"{% endif %}>{{ message }}</li>
-      {% endfor %}
-    </ul>
+<h2 class="mb-4">Загрузка прайс-листа</h2>
+<form method="post" enctype="multipart/form-data" class="row g-3">
+  {% csrf_token %}
+  <div class="col-md-6">
+    {{ form.file.label_tag }}
+    {{ form.file }}
+  </div>
+  <div class="col-md-6">
+    {{ form.supplier_name.label_tag }}
+    {{ form.supplier_name }}
+  </div>
+  {% if form.date_str %}
+  <div class="col-md-6">
+    <label for="id_date_str">Дата (ДД.ММ.ГГГГ):</label>
+    <input type="text" name="date_str" id="id_date_str" class="form-control" placeholder="ДД.ММ.ГГГГ" value="{{ form.date_str.value|default_if_none:'' }}">
+  </div>
   {% endif %}
+  <div class="col-12 mt-3">
+    <button type="submit" class="btn btn-primary btn-lg">Загрузить</button>
+  </div>
+</form>
+{% if messages %}
+  <div class="mt-4">
+    {% for message in messages %}
+      <div class="alert alert-{{ message.tags }}">{{ message }}</div>
+    {% endfor %}
+  </div>
+{% endif %}
 {% endblock %} 

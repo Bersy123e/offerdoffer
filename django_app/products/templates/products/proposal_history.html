@@ -1,32 +1,42 @@
-{% extends 'admin/base_site.html' %}
+{% extends 'products/base_dashboard.html' %}
+{% block title %}История КП | Панель управления ООО «АРМАСЕТИ ИМПОРТ»{% endblock %}
 {% block content %}
-  <h1>История запросов и коммерческих предложений</h1>
-  <table border="1" cellpadding="5">
-    <tr>
-      <th>Дата/время</th>
-      <th>Запрос</th>
-      <th>Найдено товаров</th>
-      <th>КП (Excel)</th>
-    </tr>
-    {% for query in queries %}
-      <tr>
-        <td>{{ query.created_at|date:"d.m.Y H:i" }}</td>
-        <td>{{ query.query_text|truncatechars:80 }}</td>
-        <td>{{ query.result_count }}</td>
-        <td>
-          {% for proposal in query.proposals.all %}
-            {% if proposal.file %}
-              <a href="{{ proposal.file.url }}" download>Скачать КП ({{ proposal.created_at|date:"d.m.Y H:i" }})</a><br>
-            {% else %}
-              —
-            {% endif %}
-          {% empty %}
-            —
-          {% endfor %}
-        </td>
-      </tr>
-    {% empty %}
-      <tr><td colspan="4">История пуста</td></tr>
+<h2 class="mb-4">История коммерческих предложений</h2>
+{% if messages %}
+  <div class="mb-3">
+    {% for message in messages %}
+      <div class="alert alert-{{ message.tags }}">{{ message }}</div>
     {% endfor %}
-  </table>
+  </div>
+{% endif %}
+{% if queries %}
+  <div class="table-responsive">
+    <table class="table table-bordered table-hover align-middle">
+      <thead class="table-light">
+        <tr>
+          <th>Дата</th>
+          <th>Запрос</th>
+          <th>Кол-во КП</th>
+          <th>Скачать</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for query in queries %}
+        <tr>
+          <td>{{ query.created_at|date:"d.m.Y H:i" }}</td>
+          <td style="max-width:320px;">{{ query.query_text|truncatechars:120 }}</td>
+          <td>{{ query.proposals.count }}</td>
+          <td>
+            {% for proposal in query.proposals.all %}
+              <a href="{{ proposal.file.url }}" class="btn btn-outline-primary btn-sm" download>Скачать КП #{{ proposal.id }}</a><br>
+            {% endfor %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% else %}
+  <div class="alert alert-info">История пуста.</div>
+{% endif %}
 {% endblock %} 

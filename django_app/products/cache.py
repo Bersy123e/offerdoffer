@@ -28,21 +28,20 @@ class QueryCache:
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
-                
-                # Create cache table
-                cursor.execute('''
-                CREATE TABLE IF NOT EXISTS query_cache (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    query TEXT UNIQUE,
-                    result BLOB,
-                    timestamp INTEGER
-                )
-                ''')
-                
-                # Create index for faster lookups
-                cursor.execute('CREATE INDEX IF NOT EXISTS idx_query ON query_cache(query)')
-                
-                conn.commit()
+            
+            # Create cache table
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS query_cache (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                query TEXT UNIQUE,
+                result BLOB,
+                timestamp INTEGER
+            )
+            ''')
+            
+            # Create index for faster lookups
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_query ON query_cache(query)')
+            conn.commit()
             logger.info("Cache database initialized successfully")
             
         except Exception as e:
@@ -62,33 +61,33 @@ class QueryCache:
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
-                cursor.execute(
-                    "SELECT result, timestamp FROM query_cache WHERE query = ?",
-                    (query,)
-                )
+            cursor.execute(
+                "SELECT result, timestamp FROM query_cache WHERE query = ?",
+                (query,)
+            )
+            
+            row = cursor.fetchone()
+            
+            if row:
+                result_blob, timestamp = row
                 
-                row = cursor.fetchone()
-                
-                if row:
-                    result_blob, timestamp = row
-                    
-                    # Check if expired
-                    if time.time() - timestamp > self.expire_time:
-                        logger.info(f"Cache entry expired for query: {query}")
-                        self._remove(query)
-                        self.miss_count += 1
-                        return None
-                    
-                    # Deserialize result
-                    result = pickle.loads(result_blob)
-                    
-                    self.hit_count += 1
-                    logger.info(f"Cache hit for query: {query}")
-                    return result
-                else:
+                # Check if expired
+                if time.time() - timestamp > self.expire_time:
+                    logger.info(f"Cache entry expired for query: {query}")
+                    self._remove(query)
                     self.miss_count += 1
-                    logger.info(f"Cache miss for query: {query}")
                     return None
+                
+                # Deserialize result
+                result = pickle.loads(result_blob)
+                
+                self.hit_count += 1
+                logger.info(f"Cache hit for query: {query}")
+                return result
+            else:
+                self.miss_count += 1
+                logger.info(f"Cache miss for query: {query}")
+                return None
         
         except Exception as e:
             logger.error(f"Error getting from cache: {str(e)}")
@@ -111,12 +110,11 @@ class QueryCache:
             
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
-                cursor.execute(
-                    "INSERT OR REPLACE INTO query_cache (query, result, timestamp) VALUES (?, ?, ?)",
-                    (query, result_blob, int(time.time()))
-                )
-                
-                conn.commit()
+            cursor.execute(
+                "INSERT OR REPLACE INTO query_cache (query, result, timestamp) VALUES (?, ?, ?)",
+                (query, result_blob, int(time.time()))
+            )
+            conn.commit()
             logger.info(f"Cached result for query: {query}")
             return True
             
@@ -137,8 +135,8 @@ class QueryCache:
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
-                cursor.execute("DELETE FROM query_cache WHERE query = ?", (query,))
-                conn.commit()
+            cursor.execute("DELETE FROM query_cache WHERE query = ?", (query,))
+            conn.commit()
             logger.info(f"Removed cache entry for query: {query}")
             return True
             
@@ -156,8 +154,8 @@ class QueryCache:
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
-                cursor.execute("DELETE FROM query_cache")
-                conn.commit()
+            cursor.execute("DELETE FROM query_cache")
+            conn.commit()
             logger.info("Cache cleared")
             return True
             
@@ -178,8 +176,8 @@ class QueryCache:
         # Get cache size
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM query_cache")
-            cache_size = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM query_cache")
+        cache_size = cursor.fetchone()[0]
         
         return {
             "hit_count": self.hit_count,
