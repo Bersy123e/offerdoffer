@@ -4,7 +4,7 @@
 <h2 class="mb-4">FAQ / Помощь</h2>
 <ul class="list-group mb-4">
   <li class="list-group-item"><a href="{% url 'home' %}" class="btn btn-link">Главная панель</a> — быстрый доступ ко всем разделам</li>
-  <li class="list-group-item"><a href="{% url 'upload_price_list_simple' %}" class="btn btn-link">Загрузка прайс-листа</a> — добавить или обновить товары</li>
+        <li class="list-group-item"><a href="{% url 'upload_price_list' %}" class="btn btn-link">Загрузка прайс-листа</a> — добавить или обновить товары</li>
   <li class="list-group-item"><a href="{% url 'ai_product_search' %}" class="btn btn-link">ИИ-поиск</a> — умный подбор товаров по описанию</li>
   <li class="list-group-item"><a href="{% url 'client_request_to_proposal' %}" class="btn btn-link">Составить КП</a> — загрузить запрос клиента и получить КП</li>
   <li class="list-group-item"><a href="{% url 'proposal_history' %}" class="btn btn-link">История КП</a> — просмотр и скачивание ранее сгенерированных КП</li>
@@ -14,7 +14,7 @@
 <h4 class="mb-3">Часто задаваемые вопросы</h4>
 <ol>
   <li><b>Как загрузить прайс-лист?</b><br>
-    Перейдите в раздел <a href="{% url 'upload_price_list_simple' %}">Загрузка прайс-листа</a>, выберите файл Excel или CSV, укажите поставщика и нажмите «Загрузить».
+    Перейдите в раздел <a href="{% url 'upload_price_list' %}">Загрузка прайс-листа</a>, выберите файл Excel или CSV, укажите поставщика и нажмите «Загрузить».
   </li>
   <li><b>Как воспользоваться ИИ-поиском?</b><br>
     В разделе <a href="{% url 'ai_product_search' %}">ИИ-поиск</a> введите описание товара или характеристики — система подберёт подходящие позиции.

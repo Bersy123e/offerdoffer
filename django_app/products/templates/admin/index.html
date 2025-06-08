@@ -1,0 +1,45 @@
+{% extends "admin/index.html" %}
+{% load i18n static %}
+
+{% block content %}
+<!-- КНОПКА АНАЛИТИКИ ВВЕРХУ СТРАНИЦЫ -->
+<div style="background: linear-gradient(45deg, #417690, #5a9fc7); padding: 15px; border-radius: 8px; margin-bottom: 20px; text-align: center;">
+    <h2 style="color: white; margin: 0 0 10px 0;">📊 Система аналитики</h2>
+    <a href="/admin/analytics/" 
+       style="display: inline-block; background: white; color: #417690; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: bold; font-size: 16px; box-shadow: 0 2px 4px rgba(0,0,0,0.2);">
+        📈 Открыть панель аналитики
+    </a>
+    <p style="color: rgba(255,255,255,0.9); margin: 10px 0 0 0; font-size: 14px;">
+        Статистика по товарам, поставщикам, предложениям и поисковым запросам
+    </p>
+</div>
+
+{{ block.super }}
+
+<!-- Дополнительный блок аналитики в стандартном стиле -->
+<div class="module">
+    <table summary="{% trans 'Analytics' %}">
+        <caption><a href="/admin/analytics/" class="section" title="{% trans 'Analytics' %}">📊 Аналитика системы</a></caption>
+        <tbody>
+            <tr class="model-analytics">
+                <th scope="row">
+                    <a href="/admin/analytics/">📊 Панель аналитики</a>
+                </th>
+                <td><a href="/admin/analytics/" class="addlink">Просмотреть статистику</a></td>
+            </tr>
+        </tbody>
+    </table>
+</div>
+
+<style>
+.model-analytics a {
+    color: #417690;
+    font-weight: bold;
+}
+
+.model-analytics .addlink {
+    background: url(/static/admin/img/icon-addlink.svg) 0 1px no-repeat;
+    padding-left: 16px;
+}
+</style>
+{% endblock %} 

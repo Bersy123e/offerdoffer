@@ -1,0 +1,220 @@
+{% extends "admin/base_site.html" %}
+{% load i18n admin_urls static admin_list %}
+
+{% block title %}{{ title }} | {{ site_title|default:_('Django site admin') }}{% endblock %}
+
+{% block branding %}
+<h1 id="site-name"><a href="{% url 'admin:index' %}">{{ site_header|default:_('Django administration') }}</a></h1>
+{% endblock %}
+
+{% block nav-global %}{% endblock %}
+
+{% block content %}
+<div class="module">
+    <h1>📊 Аналитика системы "АРМАСЕТИ ИМПОРТ"</h1>
+    <p class="help">Сгенерировано: {{ analytics.generated_at }}</p>
+</div>
+
+<!-- Основные показатели -->
+<div class="module">
+    <h2>📈 Основные показатели</h2>
+    <table>
+        <tbody>
+            <tr>
+                <th scope="row">📦 Товары в базе:</th>
+                <td><strong>{{ analytics.database_stats.total_products }}</strong></td>
+            </tr>
+            <tr>
+                <th scope="row">🏪 Поставщики:</th>
+                <td><strong>{{ analytics.database_stats.total_suppliers }}</strong></td>
+            </tr>
+            <tr>
+                <th scope="row">📋 Предложения (за {{ analytics.proposal_stats.period_days }} дн.):</th>
+                <td><strong>{{ analytics.proposal_stats.total_proposals }}</strong></td>
+            </tr>
+            <tr>
+                <th scope="row">🔍 Поисковые запросы:</th>
+                <td><strong>{{ analytics.search_stats.total_searches }}</strong></td>
+            </tr>
+            <tr>
+                <th scope="row">💰 Товары с ценами:</th>
+                <td><strong>{{ analytics.database_stats.products_with_prices }}</strong></td>
+            </tr>
+        </tbody>
+    </table>
+</div>
+
+<!-- Статистика предложений -->
+<div class="module">
+    <h2>📋 Статистика коммерческих предложений</h2>
+    <table>
+        <tbody>
+            <tr>
+                <th scope="row">Период анализа:</th>
+                <td>{{ analytics.proposal_stats.start_date }} - {{ analytics.proposal_stats.end_date }}</td>
+            </tr>
+            <tr>
+                <th scope="row">Всего предложений:</th>
+                <td><strong>{{ analytics.proposal_stats.total_proposals }}</strong></td>
+            </tr>
+            <tr>
+                <th scope="row">Товаров в предложениях:</th>
+                <td><strong>{{ analytics.proposal_stats.total_products_in_proposals }}</strong></td>
+            </tr>
+            <tr>
+                <th scope="row">Среднее товаров на КП:</th>
+                <td><strong>{{ analytics.proposal_stats.avg_products_per_proposal }}</strong></td>
+            </tr>
+        </tbody>
+    </table>
+</div>
+
+<!-- Топ поставщики -->
+{% if analytics.top_suppliers %}
+<div class="module">
+    <h2>🏪 Топ поставщики по количеству товаров</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Поставщик</th>
+                <th>Количество товаров</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for supplier in analytics.top_suppliers %}
+            <tr>
+                <td>{{ supplier.name }}</td>
+                <td><strong>{{ supplier.product_count }}</strong></td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+<!-- Популярные запросы -->
+{% if analytics.popular_searches %}
+<div class="module">
+    <h2>🔍 Популярные поисковые запросы</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Запрос</th>
+                <th>Количество поисков</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for search in analytics.popular_searches %}
+            <tr>
+                <td>{{ search.query_text }}</td>
+                <td><strong>{{ search.search_count }}</strong></td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+<!-- Распределение по поставщикам -->
+{% if analytics.supplier_distribution %}
+<div class="module">
+    <h2>📊 Распределение товаров по поставщикам</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Поставщик</th>
+                <th>Количество товаров</th>
+                <th>Процент от общего</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for supplier in analytics.supplier_distribution %}
+            <tr>
+                <td><strong>{{ supplier.name }}</strong></td>
+                <td>{{ supplier.product_count }}</td>
+                <td>{{ supplier.percentage }}%</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+<!-- Статистика поиска -->
+<div class="module">
+    <h2>🔍 Статистика поиска</h2>
+    <table>
+        <tbody>
+            <tr>
+                <th scope="row">Всего поисков:</th>
+                <td><strong>{{ analytics.search_stats.total_searches }}</strong></td>
+            </tr>
+            <tr>
+                <th scope="row">Уникальных запросов:</th>
+                <td><strong>{{ analytics.search_stats.unique_queries }}</strong></td>
+            </tr>
+            <tr>
+                <th scope="row">Среднее результатов на поиск:</th>
+                <td><strong>{{ analytics.search_stats.avg_results_per_search|floatformat:1 }}</strong></td>
+            </tr>
+        </tbody>
+    </table>
+</div>
+
+<!-- Планируемые функции -->
+<div class="module">
+    <h2>🚧 Планируемые функции</h2>
+    <div class="help">
+        <p><strong>📈 Расширенная аналитика:</strong> графики динамики, сравнение периодов, прогнозирование</p>
+        <p><strong>📊 Отчеты:</strong> PDF отчеты, Excel экспорт, автоматическая рассылка</p>
+        <p><strong>⚙️ Настройки:</strong> кастомные периоды, фильтры по поставщикам, персональные дашборды</p>
+    </div>
+</div>
+
+<div class="module">
+    <p>
+        <a href="{% url 'admin:index' %}" class="button">⬅️ Вернуться к главной</a>
+        <a href="/admin/analytics/info/" class="button" style="margin-left: 10px;">🔍 Как работает аналитика</a>
+    </p>
+</div>
+
+<style>
+.module {
+    margin-bottom: 20px;
+}
+
+.module h2 {
+    background: #417690;
+    color: white;
+    padding: 8px 12px;
+    margin: 0;
+    font-size: 14px;
+    font-weight: bold;
+}
+
+.module table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.module table th,
+.module table td {
+    padding: 8px 12px;
+    border-bottom: 1px solid #ddd;
+    text-align: left;
+}
+
+.module table th {
+    background: #f8f8f8;
+    font-weight: bold;
+}
+
+.help {
+    padding: 12px;
+    background: #f8f8f8;
+    border-left: 4px solid #417690;
+    font-size: 13px;
+    color: #666;
+}
+</style>
+{% endblock %} 

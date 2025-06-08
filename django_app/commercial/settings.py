@@ -38,6 +38,8 @@ ALLOWED_HOSTS = ['158.160.157.43', '127.0.0.1', 'localhost']
 # Application definition
 
 INSTALLED_APPS = [
+    'admin_interface',
+    'colorfield',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -123,11 +125,19 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/5.2/howto/static-files/
 
 STATIC_URL = 'static/'
+STATIC_ROOT = BASE_DIR.parent / 'collected_static'  # Для продакшена
+STATICFILES_DIRS = [
+    BASE_DIR.parent / 'static',  # Наши кастомные статические файлы
+]
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# Admin Interface Configuration
+X_FRAME_OPTIONS = 'SAMEORIGIN'
+SILENCED_SYSTEM_CHECKS = ['security.W019']
 
 LOGGING = {
     'version': 1,

@@ -7,45 +7,45 @@ def setup_logger(
     name: str = "commercial_proposal", 
     level: int = logging.INFO, 
     log_file: str = "app.log",
-    max_bytes: int = 10485760,  # 10MB
+    max_bytes: int = 10485760,  # 10МБ
     backup_count: int = 5,
     log_format: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 ) -> logging.Logger:
     """
-    Set up and configure logger.
+    Настройка логгера нужна для отслеживания работы системы и ошибок.
     
     Args:
-        name: Logger name
-        level: Logging level
-        log_file: Log file path
-        max_bytes: Maximum log file size in bytes
-        backup_count: Number of backup files to keep
-        log_format: Log format string
+        name: Имя логгера
+        level: Уровень логирования
+        log_file: Путь к файлу логов
+        max_bytes: Максимальный размер файла лога в байтах
+        backup_count: Количество резервных файлов
+        log_format: Формат сообщений лога
         
     Returns:
-        Configured logger
+        Настроенный логгер
     """
-    # Create logs directory if it doesn't exist
+    # Создание папки логов нужно для избежания ошибок записи
     log_dir = os.path.dirname(log_file)
     if log_dir and not os.path.exists(log_dir):
         os.makedirs(log_dir)
     
-    # Get or create logger
+    # Получение или создание логгера
     logger = logging.getLogger(name)
     
-    # Only configure if it hasn't been configured already
+    # Проверка конфигурации предотвращает дублирование обработчиков
     if not logger.handlers:
         logger.setLevel(level)
         
-        # Create formatter
+        # Форматтер нужен для единообразного вида сообщений
         formatter = logging.Formatter(log_format)
         
-        # Create console handler
+        # Консольный вывод нужен для мониторинга в реальном времени
         console_handler = logging.StreamHandler()
         console_handler.setFormatter(formatter)
         logger.addHandler(console_handler)
         
-        # Create file handler with UTF-8 encoding
+        # Файловый вывод с UTF-8 нужен для сохранения истории и русских символов
         file_handler = RotatingFileHandler(
             log_file, 
             maxBytes=max_bytes, 
@@ -55,12 +55,12 @@ def setup_logger(
         file_handler.setFormatter(formatter)
         logger.addHandler(file_handler)
         
-        logger.info(f"Logger {name} initialized")
+        logger.info(f"Логгер {name} инициализирован")
     
     return logger
 
 class LoggerManager:
-    """Manager for creating and retrieving loggers."""
+    """Менеджер для создания и получения логгеров с централизованным управлением."""
     
     _loggers: Dict[str, logging.Logger] = {}
     
@@ -72,15 +72,15 @@ class LoggerManager:
         log_file: Optional[str] = None
     ) -> logging.Logger:
         """
-        Get or create a logger with the given name.
+        Получение или создание логгера с кэшированием для производительности.
         
         Args:
-            name: Logger name
-            level: Logging level
-            log_file: Log file path (default: logs/{name}.log)
+            name: Имя логгера
+            level: Уровень логирования
+            log_file: Путь к файлу логов (по умолчанию: logs/{name}.log)
             
         Returns:
-            Configured logger
+            Настроенный логгер
         """
         if name not in cls._loggers:
             log_file = log_file or f"logs/{name}.log"

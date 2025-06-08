@@ -1,0 +1,40 @@
+{% extends "admin/base.html" %}
+
+{% block extrahead %}
+{{ block.super }}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Добавляем кнопку аналитики ТОЛЬКО на главную страницу админки
+    if (window.location.pathname === '/admin/' || window.location.pathname === '/admin') {
+        var contentDiv = document.querySelector('#content');
+        if (contentDiv) {
+            // Создаем кнопку аналитики
+            var analyticsButton = document.createElement('div');
+            analyticsButton.innerHTML = `
+                <div style="background: linear-gradient(45deg, #2c3e50, #3498db); 
+                            padding: 15px; border-radius: 8px; margin: 0 0 20px 0; 
+                            text-align: center; box-shadow: 0 4px 12px rgba(0,0,0,0.15);">
+                    <h3 style="color: white; margin: 0 0 10px 0; font-size: 18px; font-weight: bold;">
+                        📊 Система аналитики
+                    </h3>
+                    <a href="/analytics/" 
+                       style="display: inline-block; background: white; color: #2c3e50; 
+                              padding: 10px 20px; border-radius: 6px; text-decoration: none; 
+                              font-weight: bold; font-size: 14px;">
+                        📈 Открыть панель аналитики
+                    </a>
+                </div>
+            `;
+            
+            // Вставляем кнопку в начало контента
+            var firstChild = contentDiv.firstChild;
+            if (firstChild) {
+                contentDiv.insertBefore(analyticsButton, firstChild);
+            } else {
+                contentDiv.appendChild(analyticsButton);
+            }
+        }
+    }
+});
+</script>
+{% endblock %} 

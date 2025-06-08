@@ -9,5 +9,5 @@ urlpatterns = [
     path('client_request/', views.client_request_to_proposal, name='client_request_to_proposal'),
     path('proposal_history/', views.proposal_history, name='proposal_history'),
     path('faq/', views.faq, name='faq'),
-    path('upload_price_list_simple/', views.upload_price_list_simple, name='upload_price_list_simple'),
+    path('analytics/', views.analytics_dashboard, name='analytics_dashboard'),
 ] 

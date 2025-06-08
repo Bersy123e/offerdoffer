@@ -18,8 +18,12 @@ class Supplier(models.Model):
 class Product(models.Model):
     supplier = models.ForeignKey(Supplier, on_delete=models.CASCADE, related_name='products')
     name = models.CharField(max_length=512)
-    price = models.DecimalField(max_digits=12, decimal_places=2)
-    stock = models.IntegerField(default=0)
+    # Изменяем price и stock на CharField для поддержки "X"
+    price = models.CharField(max_length=50, default='X')  # Цена или "X"
+    stock = models.CharField(max_length=50, default='X')  # Количество или "X"
+    # Добавляем артикул и дату прайс-листа
+    article = models.CharField(max_length=255, blank=True, null=True)
+    price_list_date = models.CharField(max_length=50, blank=True, null=True)  # Дата прайс-листа
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

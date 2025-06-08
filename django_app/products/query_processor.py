@@ -19,6 +19,11 @@ from .cache import QueryCache
 from logger import setup_logger
 from .models import Product
 
+# Отключаем DEBUG логи от OpenAI и httpx чтобы не засорять вывод
+logging.getLogger("openai").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 logger = setup_logger()
 
 def extract_quantity(text: Optional[str]) -> Optional[int]:
@@ -43,13 +48,28 @@ def extract_quantity(text: Optional[str]) -> Optional[int]:
 
 def normalize_dimensions(text: str) -> str:
     """
-    Приводит размеры вида '57х5', '57 х 5', '57*5', '57 x 5', '57X5' к единому виду '57x5'.
-    Заменяет все варианты 'x', 'х', '*', с пробелами и без, на 'x' без пробелов.
+    Приводит размеры к единому виду:
+    '57х5', '57 х 5', '57*5', '57 x 5', '57X5', '57 5' -> '57x5'
+    ВАЖНО: нормализует ВСЕ возможные варианты написания размеров
     """
     if not text:
         return text
-    # Заменяем кириллическую 'х' и латинскую 'x' и '*' на 'x', убираем пробелы вокруг
-    return re.sub(r'(\d+)\s*[xх*]\s*(\d+)', r'\1x\2', text, flags=re.IGNORECASE)
+    
+    result = text
+    
+    # 1. Заменяем все варианты разделителей размеров на 'x'
+    # Кириллическая 'х', латинская 'x', '*', любые пробелы вокруг
+    result = re.sub(r'(\d+)\s*[xх*×X]\s*(\d+)', r'\1x\2', result, flags=re.IGNORECASE)
+    
+    # 2. КРИТИЧНО: "число пробел число" тоже размер (57 5 -> 57x5) 
+    # Но только если это явно размеры (не в середине длинного числа)
+    result = re.sub(r'(\d+)\s+(\d+)(?=\s|$|[^\d.])', r'\1x\2', result)
+    
+    # 3. Дополнительные варианты размеров
+    # "Ду57/5" или "57/5" тоже размеры 
+    result = re.sub(r'(\d+)/(\d+)', r'\1x\2', result)
+    
+    return result
 
 class QueryProcessor:
     def __init__(self, query_cache: QueryCache):
@@ -335,30 +355,23 @@ class QueryProcessor:
         try:
             logger.info(f"Processing query: {query}")
             query = normalize_dimensions(query)
-            prompt = f"""
-            ЗАДАЧА: Извлечь из текста ТОЧНЫЕ ключевые слова для поиска товара в базе по полю 'name'.
-            ПРАВИЛА:
-            1. Извлекай характеристики МАКСИМАЛЬНО ПОЛНО и ТОЧНО как они есть в тексте (например, "тип В", "ст.20", "ГОСТ 17375-2001", "108*6", "ДУ400", "РУ16"). НЕ разбивай их на части (НЕ надо "тип" и "В" отдельно).
-            2. НЕ включай количество (штук, шт, компл и т.д.) и связанные с ним числа.
-            3. НЕ включай единицы измерения (мм, кг, гр и т.п.), если они не являются частью ГОСТа или маркировки.
-            4. НЕ включай общие слова и предлоги ("нужен", "в", "количестве", "для", "под", "и", "с", "еще").
-            5. Формат ответа - ТОЛЬКО валидный JSON-массив строк. Никакого лишнего текста.
-            
-            ПРИМЕРЫ:
-            Запрос: "Отвод ГОСТ17375-2001 108*6 ст.20 90гр. 2000 штук"
-            Ответ: ["Отвод", "ГОСТ 17375-2001", "108*6", "ст.20", "90гр"]
-            Запрос: "редуктор тип В нужен в количестве 5 штук"
-            Ответ: ["редуктор", "тип В"]
-            Запрос: "Задвижка под привод 30с964нж ДУ300 РУ25 (тип Б)"
-            Ответ: ["Задвижка", "под привод", "30с964нж", "ДУ300", "РУ25", "тип Б"]
-            Запрос: "Фланцы плоские ст.20 исп.В Ду 25"
-            Ответ: ["Фланцы", "плоские", "ст.20", "исп.В", "Ду 25"]
-            Запрос: "Редуктор Г 10 шт"
-            Ответ: ["Редуктор", "Г"]
-            
-            Запрос: {query}
-            Ответ:
-            """
+            prompt = f"""ЗАДАЧА: Извлечь ключевые слова для поиска товара.
+
+ПРАВИЛА:
+1. Извлекай характеристики ТОЧНО как в тексте: "тип В", "ст.20", "ГОСТ 17375-2001", "108*6", "ДУ400".
+2. НЕ включай количество (штук, шт, компл) и числа количества.
+3. НЕ включай слова: нужен, для, под, и, с, еще, в, количестве.
+4. ВСЕГДА возвращай JSON-массив, даже для простых слов.
+
+ПРИМЕРЫ:
+"редуктор" → ["редуктор"]
+"фланец" → ["фланец"] 
+"отвод 57х5" → ["отвод", "57х5"]
+"задвижка ДУ300" → ["задвижка", "ДУ300"]
+"Отвод ГОСТ17375-2001 108*6 ст.20 90гр. 2000 штук" → ["Отвод", "ГОСТ17375-2001", "108*6", "ст.20", "90гр"]
+
+Запрос: {query}
+Ответ:"""
             response = self.llm.invoke(prompt)
             text = response.content.strip()
             keywords = []
@@ -385,213 +398,449 @@ class QueryProcessor:
                     keywords = [query] if query else []
             logger.info(f"Using keywords: {keywords}")
             if keywords:
-                escaped_keywords = [re.escape(kw) for kw in keywords]
-                q_objects = [Q(name__iregex=kw) for kw in escaped_keywords]
-                combined_q = reduce(operator.or_, q_objects)
-                qs = Product.objects.filter(combined_q)
-                try:
-                    logger.info(f"Generated SQL query (OR search): {qs.query}")
-                except Exception as sql_err:
-                    logger.error(f"Could not log SQL query: {sql_err}")
+                # УМНЫЙ ПОИСК С РЕЛЕВАНТНОСТЬЮ И ФИЛЬТРАЦИЕЙ
+                all_products = list(Product.objects.all())
+                scored_products = []
+                
+                for product in all_products:
+                    score = self._calculate_relevance_score(product.name.lower(), keywords, query.lower())
+                    if score > 0:
+                        scored_products.append((product, score))
+                
+                # Сортируем по релевантности (убывание)
+                scored_products.sort(key=lambda x: x[1], reverse=True)
+                
+                if not scored_products:
+                    logger.info("No products found with positive relevance score.")
+                    return []
+                
+                # АДАПТИВНЫЙ ПОРОГ РЕЛЕВАНТНОСТИ
+                max_score = scored_products[0][1]
+                
+                # БОЛЕЕ МЯГКИЕ пороги для лучшего покрытия
+                if max_score >= 1000:  # Точное совпадение
+                    threshold = 50   # Снижаем порог
+                elif max_score >= 500:  # Название начинается с запроса  
+                    threshold = 40   # Снижаем порог
+                elif max_score >= 300:  # Запрос содержится в названии
+                    threshold = 30   # Снижаем порог
+                elif max_score >= 150:  # Хорошие совпадения ключевых слов
+                    threshold = 20   # Снижаем порог
+                else:  # Слабые совпадения
+                    threshold = 15   # Снижаем порог
+                
+                # Фильтруем по порогу
+                filtered_products = [(p, s) for p, s in scored_products if s >= threshold]
+                
+                # НЕ ОГРАНИЧИВАЕМ количество результатов - могут быть разные поставщики
+                # Пользователь хочет видеть все релевантные товары от всех поставщиков
+                
+                results = [product for product, score in filtered_products]
+                
+                logger.info(f"Found {len(results)} relevant products (threshold={threshold}, max_score={max_score:.1f}).")
+                if filtered_products:
+                    logger.info(f"Top 3 matches: {[(p.id, p.name[:50], f'{score:.1f}') for p, score in filtered_products[:3]]}")
+                
+                return results
             else:
-                qs = Product.objects.none()
-            results = list(qs)
-            logger.info(f"Found {len(results)} products by OR search. Returning all.")
-            return results
+                logger.info("No keywords extracted, returning empty results.")
+                return []
         except Exception as e:
             logger.error(f"Error processing query: {str(e)}")
             raise
     
+    def _calculate_relevance_score(self, product_name: str, keywords: List[str], original_query: str) -> float:
+        """
+        Рассчитывает релевантность товара запросу.
+        Чем выше балл, тем более релевантен товар.
+        """
+        score = 0.0
+        product_name = product_name.lower().strip()
+        original_query = original_query.lower().strip()
+        
+        # 0. ПРЕДВАРИТЕЛЬНАЯ ФИЛЬТРАЦИЯ - исключаем заведомо нерелевантные товары
+        if len(original_query) >= 3:  # Только для запросов длиннее 3 символов
+            # Если нет ни одного общего значимого слова - сразу отсекаем
+            query_words = set(re.findall(r'\b\w{2,}\b', original_query))  # Слова от 2 букв
+            product_words = set(re.findall(r'\b\w{2,}\b', product_name))
+            
+            # НО! Не отсекаем если есть размеры - они могут быть записаны по-разному
+            has_dimensions = bool(re.search(r'\d+[x*х]\d+', original_query, re.IGNORECASE))
+            
+            if not has_dimensions and not query_words.intersection(product_words) and original_query not in product_name:
+                return 0  # Нет пересечений - нерелевантно
+        
+        # 1. ТОЧНОЕ СОВПАДЕНИЕ названия (высший приоритет)
+        if product_name == original_query:
+            score += 1000
+            return score
+        
+        # 2. НАЗВАНИЕ НАЧИНАЕТСЯ С ЗАПРОСА (очень высокий приоритет)
+        if product_name.startswith(original_query):
+            score += 500
+            return score
+        
+        # 3. ЗАПРОС СОДЕРЖИТСЯ В НАЗВАНИИ ЦЕЛИКОМ
+        if original_query in product_name:
+            score += 300
+        
+        # 4. СТРОГАЯ ПРОВЕРКА КЛЮЧЕВЫХ СЛОВ
+        keywords_lower = [kw.lower().strip() for kw in keywords if kw and len(kw.strip()) >= 2]
+        exact_matches = 0
+        important_keywords_found = 0
+        
+        # Важные ключевые слова (типы товаров, характеристики)
+        important_patterns = ['редуктор', 'задвижка', 'фланец', 'отвод', 'переход', 'тройник', 
+                             'заглушка', 'клапан', 'кран', 'муфта', 'патрубок',
+                             r'ду\s*\d+', r'ру\s*\d+', r'гост\s*\d+', r'ст\.\d+', r'тип\s*[а-я]']
+        
+        for keyword in keywords_lower:
+            if keyword in product_name:
+                # Базовый бонус за вхождение
+                base_bonus = 30
+                
+                # Проверяем важность ключевого слова
+                is_important = any(re.search(pattern, keyword, re.IGNORECASE) for pattern in important_patterns) or \
+                              any(pattern in keyword for pattern in ['редуктор', 'задвижка', 'фланец', 'отвод'])
+                
+                if is_important:
+                    base_bonus = 80  # Повышенный бонус для важных слов
+                    important_keywords_found += 1
+                    
+                score += base_bonus
+                exact_matches += 1
+                
+                # Дополнительный бонус за границы слов (более точное совпадение)
+                if f" {keyword} " in f" {product_name} " or \
+                   product_name.startswith(keyword + " ") or \
+                   product_name.endswith(" " + keyword) or \
+                   len(keyword) >= 4:  # Длинные ключевые слова менее требовательны к границам
+                    score += 20
+        
+        # 5. СТРОГИЕ ТРЕБОВАНИЯ К ПОКРЫТИЮ
+        if len(keywords_lower) > 0:
+            coverage_ratio = exact_matches / len(keywords_lower)
+            
+            if coverage_ratio >= 0.8:  # 80%+ ключевых слов найдено
+                score += 100
+            elif coverage_ratio >= 0.6:  # 60%+ ключевых слов найдено  
+                score += 50
+            elif coverage_ratio < 0.4:  # Менее 40% - штраф
+                score -= 30
+        
+        # 6. ШТРАФ ЗА ОТСУТСТВИЕ ВАЖНЫХ КЛЮЧЕВЫХ СЛОВ
+        if important_keywords_found == 0 and len(keywords_lower) > 2:
+            score -= 50  # Штраф если нет важных ключевых слов в длинном запросе
+        
+        # 6. СПЕЦИАЛЬНЫЕ БОНУСЫ ДЛЯ ЧАСТЫХ ТИПОВ ТОВАРОВ
+        special_bonuses = {
+            'редуктор': ['редуктор'],
+            'задвижка': ['задвижка', 'клапан'],
+            'фланец': ['фланец', 'фланцы'],
+            'отвод': ['отвод', 'отводы'],
+            'переход': ['переход', 'переходы'],
+            'тройник': ['тройник', 'тройники'],
+            'заглушка': ['заглушка', 'заглушки']
+        }
+        
+        for product_type, synonyms in special_bonuses.items():
+            if any(syn in original_query for syn in synonyms):
+                if product_type in product_name:
+                    score += 30  # Бонус за соответствие типа товара
+        
+        # 7. ШТРАФ ЗА СЛИШКОМ ДЛИННЫЕ НАЗВАНИЯ (если запрос короткий)
+        if len(original_query.split()) <= 2 and len(product_name.split()) > 5:
+            score -= 10
+        
+        # 8. КРИТИЧЕСКИ ВАЖНЫЙ ПОИСК ПО РАЗМЕРАМ
+        
+        # Нормализуем и запрос, и название товара для точного сравнения размеров
+        normalized_query = normalize_dimensions(original_query)
+        normalized_product = normalize_dimensions(product_name)
+        
+        # Извлекаем ВСЕ размеры из нормализованных строк
+        query_dimensions = re.findall(r'\d+x\d+', normalized_query, re.IGNORECASE)
+        product_dimensions = re.findall(r'\d+x\d+', normalized_product, re.IGNORECASE)
+        
+        # УЛУЧШЕННАЯ система размеров - точные совпадения И частичные
+        if query_dimensions:
+            exact_dimension_matches = set(query_dimensions) & set(product_dimensions)
+            
+            if exact_dimension_matches:
+                # ВЫСОКИЙ бонус за точное совпадение размеров
+                score += len(exact_dimension_matches) * 150  
+                # logger.debug(f"Exact dimension match: query={query_dimensions}, product={product_dimensions}, matches={exact_dimension_matches}")
+            elif product_dimensions:
+                # МАЛЫЙ штраф за неточные размеры - позволяем видеть близкие варианты
+                score -= 20  # Очень малый штраф
+                # logger.debug(f"Dimension mismatch penalty: query={query_dimensions}, product={product_dimensions}")
+            # Если в товаре нет размеров, не штрафуем (может быть общее название)
+        
+        # Другие КРИТИЧНЫЕ характеристики (ДУ, РУ, тип, ГОСТ, сталь)
+        critical_patterns = [
+            (r'ду\s*(\d+)', 150),      # ДУ - важная характеристика
+            (r'ру\s*(\d+)', 100),      # РУ - важная характеристика  
+            (r'тип\s*([абвг])', 80),   # Тип - важная характеристика
+            (r'гост\s*(\d+(?:[-\s]*\d+)?)', 120),  # ГОСТ - стандарт
+            (r'ст\.?\s*(\d+)', 80),    # Сталь - материал
+            (r'исп\.?\s*([а-я])', 60), # Исполнение
+            (r'09г2с', 100),           # Конкретная сталь
+            (r'ст20', 80),             # Конкретная сталь
+            (r'ст45', 80),             # Конкретная сталь
+        ]
+        
+        for pattern, bonus in critical_patterns:
+            query_matches = set(re.findall(pattern, original_query, re.IGNORECASE))
+            product_matches = set(re.findall(pattern, product_name, re.IGNORECASE))
+            
+            if query_matches and product_matches:
+                # Бонус за совпадающие критичные характеристики
+                common_matches = query_matches & product_matches
+                if common_matches:
+                    score += len(common_matches) * bonus
+                    # logger.debug(f"Critical pattern match: {pattern} - {common_matches}")  # Убираем избыточные логи
+                else:
+                    # Штраф за несовпадение критичных характеристик
+                    score -= bonus // 2
+                    # logger.debug(f"Critical pattern mismatch: query={query_matches}, product={product_matches}")  # Убираем избыточные логи
+            elif query_matches and not product_matches:
+                # Если в запросе есть критичная характеристика, а в товаре нет - штраф
+                score -= bonus // 3
+        
+        return max(score, 0)  # Минимум 0
+    
     def split_query_into_items(self, full_query: str) -> List[Dict[str, Any]]:
         """
-        Splits a full query text into individual item queries and quantities using LLM.
+        ПРОСТОЕ разделение запроса на товары:
+        - Если есть переносы строк → каждая строка = товар
+        - Если нет переносов → весь запрос = один товар
         """
-        full_query = normalize_dimensions(full_query)
+        full_query = normalize_dimensions(full_query).strip()
+        
+        if not full_query:
+            logger.warning("Empty query provided")
+            return []
+            
+        # ПРОСТАЯ ЛОГИКА: разделяем по строкам
+        if '\n' in full_query:
+            lines = [line.strip() for line in full_query.splitlines() if line.strip()]
+            
+            # УМНАЯ ФИЛЬТРАЦИЯ через LLM - определяем товарные строки
+            if self.llm and len(lines) > 1:
+                clean_lines = self._filter_product_lines_with_llm(lines)
+                logger.info(f"LLM filtered {len(clean_lines)} product lines from {len(lines)} total lines")
+            else:
+                # Простая фильтрация без LLM
+                clean_lines = []
+                for line in lines:
+                    line_lower = line.lower()
+                    # Пропускаем заголовки и мусор
+                    if any(junk in line_lower for junk in ['№', 'наименование', 'количество', 'цена', 'стоимость', 'итог']):
+                        continue
+                    if len(line) < 5:  # Слишком короткие строки
+                        continue
+                    if re.match(r'^\d+$', line):  # Только цифры
+                        continue
+                    clean_lines.append(line)
+                logger.info(f"Simple filter: {len(clean_lines)} lines from {len(lines)} total lines")
+        else:
+            # Один товар
+            clean_lines = [full_query]
+            logger.info("Treating entire query as single item")
+        
+        # Создаем список товаров
         items = []
-        try:
-            logger.info(f"Attempting to split query using LLM: {full_query[:100]}...")
-            response = self.split_chain.invoke({"query": full_query})
-            raw_llm_response = response['text'].strip()
-            logger.info(f"RAW LLM response for splitting: {raw_llm_response}") # Логируем сырой ответ
-            json_match = re.search(r'\[\s\S*\]', raw_llm_response)
-            if json_match:
-                json_str = json_match.group(0)
-                logger.info(f"Found JSON block: {json_str[:200]}...")
-                try:
-                    items = json.loads(json_str)
-                    if not isinstance(items, list):
-                         logger.error("LLM split response is not a list.")
-                         items = []
-                    else:
-                         valid_items = []
-                         for item in items:
-                              if isinstance(item, dict) and 'item_query' in item and 'quantity' in item:
-                                   valid_items.append(item)
-                              else:
-                                   logger.warning(f"Invalid item structure ignored: {item}")
-                         items = valid_items
-                         if items:
-                              logger.info(f"Successfully parsed {len(items)} items from LLM JSON.")
-                         else:
-                              logger.warning("Parsed JSON was list, but contained no valid items.")
-                except json.JSONDecodeError as json_err:
-                    logger.error(f"JSONDecodeError parsing LLM split response: {json_err}. JSON string: {json_str[:200]}...")
-                    items = []
-            else:
-                logger.warning("JSON array block not found in LLM split response.")
-                items = []
-        except Exception as e:
-            logger.exception(f"Error during LLM split query execution: {e}")
-            items = []
-        if not items:
-            logger.warning("LLM split failed or returned no valid items. Trying fallback splitting by lines/separators.")
-            lines = []
-            if '---' in full_query:
-                lines = [line.strip() for line in full_query.split('---') if line.strip()]
-            elif '\n' in full_query: # Prefer newline splitting if available
-                 lines = [line.strip() for line in full_query.splitlines() if line.strip()]
-            else:
-                # If no clear separators, treat as single item (or potentially split by common phrases if needed later)
-                lines = [full_query.strip()] if full_query.strip() else []
-
-            if len(lines) > 0: # Process lines if any exist
-                 logger.info(f"Fallback: Split query into {len(lines)} potential items based on separators/lines.")
-                 processed_items = []
-                 for line in lines:
-                      quantity = extract_quantity(line) 
-                      # --- Improved quantity removal for item_query ---
-                      # 1. Remove the quantity pattern first
-                      item_query_text = re.sub(r'\d+\s*(?:шт|штук|компл)\b', '', line, flags=re.IGNORECASE).strip()
-                      # 2. Remove any remaining standalone number at the end (likely quantity if pattern missed)
-                      item_query_text = re.sub(r'\s+\d+\s*$', '', item_query_text).strip() 
-                      # --- End Improved removal ---
-                      if item_query_text:
-                           processed_items.append({"item_query": item_query_text, "quantity": quantity})
-                      else:
-                           logger.warning(f"Fallback: Line '{line}' became empty after removing quantity, skipping.")
-                 
-                 if processed_items:
-                      items = processed_items
-                      logger.info(f"Fallback generated items: {items}")
-                 else:
-                      logger.error("Fallback: No valid items could be generated from lines.")
-                      items = [] # Ensure items is empty list if nothing generated
-            else:
-                 logger.error("Fallback: Query was empty or contained no processable lines.")
-                 items = [] # Ensure items is empty list
-
+        for line in clean_lines:
+            quantity = extract_quantity(line)
+            # Убираем количество из названия товара
+            item_name = re.sub(r'\d+\s*(?:шт|штук|компл)\b', '', line, flags=re.IGNORECASE).strip()
+            item_name = re.sub(r'\s+\d+\s*$', '', item_name).strip()  # Убираем число в конце
+            
+            if item_name:
+                items.append({
+                    "item_query": item_name,
+                    "quantity": quantity or 1
+                })
+                logger.info(f"Added item: '{item_name}', qty: {quantity or 1}")
+        
         return items
+    
+    def _filter_product_lines_with_llm(self, lines: List[str]) -> List[str]:
+        """
+        Использует LLM для определения какие строки содержат товары, а какие - мусор
+        """
+        try:
+            # Создаем промпт для фильтрации
+            lines_text = '\n'.join([f"{i+1}. {line}" for i, line in enumerate(lines)])
+            
+            prompt = f"""
+Из списка строк выбери ТОЛЬКО те, которые содержат названия товаров/изделий.
+ИСКЛЮЧИ: заголовки таблиц, номера, итоги, пустые строки, служебную информацию.
+
+СТРОКИ:
+{lines_text}
+
+Ответ в формате: только номера строк через запятую (например: 1,3,5)
+"""
+            
+            response = self.llm.invoke(prompt)
+            result_text = response.content if hasattr(response, 'content') else str(response)
+            
+            # Извлекаем номера строк
+            numbers = re.findall(r'\d+', result_text)
+            selected_indices = [int(n)-1 for n in numbers if int(n) <= len(lines)]
+            
+            # Возвращаем отфильтрованные строки
+            filtered_lines = [lines[i] for i in selected_indices if 0 <= i < len(lines)]
+            
+            if filtered_lines:
+                logger.info(f"LLM selected {len(filtered_lines)} product lines: {[f'{i+1}' for i in selected_indices]}")
+                return filtered_lines
+            else:
+                logger.warning("LLM returned no valid line numbers, using simple filter")
+                return lines  # Fallback to all lines
+                
+        except Exception as e:
+            logger.exception(f"Error in LLM filtering: {e}")
+            return lines  # Fallback to all lines
 
     def extract_products_from_table(self, table_rows: list) -> list:
-        logger.info("extract_products_from_table CALLED")
-        prompt = """
-            ЗАДАЧА: Извлечь данные о товарах из строк таблицы прайс-листа. КАЖДАЯ строка (даже если не похожа на товар) должна быть отражена в результате!
-            ПРАВИЛА:
-            1. Для КАЖДОЙ строки вернуть JSON-объект с полями: 'supplier', 'name', 'price', 'stock'. Если поле не найдено — ставь null.
-            2. supplier: Наименование поставщика (если есть столбец, иначе пусто).
-            3. name: ПОЛНОЕ наименование товара из соответствующего столбца. Если был заголовок — добавь его в начало. Если не найдено — null.
-            4. price: Цена товара. Ищи любые столбцы с ценой ('Цена', 'Price', 'Стоимость', 'Цена руб', 'Цена с НДС'). Извлекай только число (убирай валюту, 'руб', 'тг' и т.д.). Если не найдено — null.
-            5. stock: Остаток товара на складе. Если не найдено — ставь 100.
-            6. ВКЛЮЧАЙ даже строки без цены и названия (пусть будут с null).
-            7. ФОРМАТ: Верни ТОЛЬКО валидный JSON-массив объектов. Без текста до или после, без ```json ... ```.
-            ПРИМЕР СТРОКИ ИЗ ТАБЛИЦЫ:
-            {'Наименование изделия': 'Редуктор тип Б', 'Ду (мм)': '50', 'Цена руб. Ру16': '17000', 'Остаток шт': 4}
-            ОЖИДАЕМЫЙ JSON ОБЪЕКТ (если не было заголовка):
-            {\"supplier\": \"\", \"name\": \"Редуктор тип Б\", \"price\": 17000, \"stock\": 4}
-            Таблица строк (JSON): {row}
-            Ответ (ТОЛЬКО JSON-массив):
         """
+        ПРОСТАЯ И НАДЁЖНАЯ обработка прайс-листов.
+        Берет первые колонки как: название, цена, остаток
+        """
+        logger.info(f"extract_products_from_table CALLED with {len(table_rows)} rows")
+        
+        if not table_rows:
+            logger.warning("No table rows to process")
+            return []
+            
+        # Простой подход: первые колонки = название, цена, остаток
+        first_row = table_rows[0]
+        headers = list(first_row.keys())
+        logger.info(f"Available headers: {headers}")
+        
+        if len(headers) < 2:
+            logger.error("Not enough columns in the file")
+            return []
+        
+        # ПРОСТОЕ НАЗНАЧЕНИЕ: первая колонка = название, вторая = цена
+        name_col = headers[0]
+        price_col = headers[1] if len(headers) > 1 else None
+        stock_col = headers[2] if len(headers) > 2 else None
+        
+        logger.info(f"Using simple mapping: name='{name_col}', price='{price_col}', stock='{stock_col}'")
+        
         results = []
-        batch_size = 50 # Можно уменьшить для сложных таблиц
-        current_header = "" # Для хранения последнего заголовка
-        for i in range(0, len(table_rows), batch_size):
-            batch = table_rows[i:i+batch_size]
-            processed_batch = []
-            for row_dict in batch:
-                filled_values = [v for v in row_dict.values() if pd.notna(v) and str(v).strip()]
-                potential_price = str(row_dict.get('price', '') or row_dict.get('Цена', '') or row_dict.get('Цена руб', '')).strip()
-                potential_stock = str(row_dict.get('stock', '') or row_dict.get('Остаток', '') or row_dict.get('Кол-во', '')).strip()
-                is_likely_header = len(filled_values) < 3 and not potential_price and not potential_stock and len(filled_values) > 0
-                if is_likely_header:
-                    current_header = str(filled_values[0]).strip()
-                    processed_batch.append({"is_header": True, "header_text": current_header})
-                else:
-                    row_dict["_context_header"] = current_header
-                    processed_batch.append(row_dict)
-            batch_text = json.dumps(processed_batch, ensure_ascii=False)
-            full_prompt = prompt.replace('{row}', batch_text)
-            logger.info(f"LLM PROMPT (extract_products_from_table): {full_prompt}")
-            response = self.llm.invoke(full_prompt)
-            text = response.content
-            logger.info(f"LLM RAW RESPONSE (extract_products_from_table): {text}")
-            json_str = None
-            match = re.search(r"```json\s*([\s\S]*?)\s*```", text, re.IGNORECASE)
-            if match:
-                json_str = match.group(1).strip()
-            else:
-                first_bracket = text.find('[')
-                if first_bracket != -1:
-                   brace_level = 0
-                   end_index = -1
-                   in_string = False
-                   for idx, char in enumerate(text[first_bracket:]):
-                       if char == '"' and (idx == 0 or text[first_bracket+idx-1] != '\\'):
-                           in_string = not in_string
-                       elif not in_string:
-                           if char == '[' or char == '{':
-                               brace_level += 1
-                           elif char == ']' or char == '}':
-                               brace_level -= 1
-                       if brace_level == 0 and char == ']':
-                           end_index = first_bracket + idx + 1
-                           break
-                   if end_index != -1:
-                       json_str = text[first_bracket:end_index]
-                   else:
-                       json_str = text[first_bracket:]
-                else: 
-                    json_str = None
-            if json_str:
-                try:
-                    batch_result = json.loads(json_str)
-                    if not batch_result or not isinstance(batch_result, list):
-                        logger.error(f"LLM batch_result is empty or not a list! batch_result={batch_result}, batch={batch_text}")
-                    if isinstance(batch_result, list):
-                        cleaned_batch_result = []
-                        for item in batch_result:
-                            if isinstance(item, dict):
-                                item.pop('_context_header', None)
-                                name = item.get('name')
-                                price = item.get('price')
-                                if price is not None and not isinstance(price, (int, float)):
-                                    price_str = str(price)
-                                    price_num = re.findall(r"[\d\.\,]+", price_str)
-                                    if price_num:
-                                        try:
-                                            price = float(price_num[0].replace(',', '.'))
-                                        except Exception:
-                                            price = 0
-                                    else:
-                                        price = 0
-                                if name is None and price is None:
-                                    continue # Совсем пустая строка — пропускаем
-                                if price is None:
-                                    price = 0
-                                stock = item.get('stock')
-                                try:
-                                    stock_val = int(stock) if stock is not None else 100
-                                except Exception:
-                                    stock_val = 100
-                                item['name'] = name if name is not None else ''
-                                item['price'] = price
-                                item['stock'] = stock_val
-                                cleaned_batch_result.append(item)
-                        results.extend(cleaned_batch_result)
-                    else:
-                        logger.warning(f"LLM returned non-list JSON: {json_str[:500]}...")
-                except json.JSONDecodeError as json_err:
-                    logger.error(f"JSONDecodeError parsing LLM response: {json_err}. String: {json_str[:500]}... Batch: {batch_text}")
-            else:
-                logger.error(f"Could not extract JSON block from LLM response: {text[:500]}... Batch: {batch_text}")
-            time.sleep(1)
+        
+        for row_idx, row_dict in enumerate(table_rows):
+            try:
+                # Извлекаем имя
+                name = str(row_dict.get(name_col, '')).strip() if name_col else ''
+                
+                # Извлекаем цену
+                price = 0
+                price_raw = ""
+                if price_col:
+                    price_raw = str(row_dict.get(price_col, '')).strip()
+                    if price_raw:
+                        # Извлекаем числа из строки цены
+                        price_numbers = re.findall(r'[\d\,\.]+', price_raw.replace(' ', ''))
+                        if price_numbers:
+                            try:
+                                price = float(price_numbers[0].replace(',', '.'))
+                            except:
+                                price = 0
+                
+                # Логируем первые несколько строк для диагностики
+                if row_idx < 5:
+                    logger.info(f"Row {row_idx}: name='{name}', price_raw='{price_raw}', price={price}")
+                
+                # Извлекаем остаток
+                stock = 100  # значение по умолчанию
+                if stock_col:
+                    stock_raw = str(row_dict.get(stock_col, '')).strip()
+                    if stock_raw:
+                        stock_numbers = re.findall(r'\d+', stock_raw)
+                        if stock_numbers:
+                            try:
+                                stock = int(stock_numbers[0])
+                            except:
+                                stock = 100
+                
+                # Поставщик = пустая строка (не важно для простой логики)
+                supplier = ""
+                
+                # МИНИМАЛЬНАЯ фильтрация - берём почти всё
+                if not name or len(name) < 2:
+                    if row_idx < 5:
+                        logger.info(f"Row {row_idx}: Skipped - name too short: '{name}'")
+                    continue
+                    
+                # Если нет цены - ставим 0 (цена неизвестна, но товар есть)
+                if price <= 0:
+                    price = 0.0
+                    if row_idx < 5:
+                        logger.info(f"Row {row_idx}: Set price=0 (no price found) for '{name}'")
+                    
+                # УЛУЧШЕННАЯ фильтрация мусора
+                name_lower = name.lower().strip()
+                
+                # 1. Заголовки таблиц
+                if name_lower in ['наименование', 'товар', 'цена', 'название', 'артикул', 'код', 'остаток', 'количество', 'сумма', 'стоимость']:
+                    if row_idx < 5:
+                        logger.info(f"Row {row_idx}: Skipped - table header: '{name}'")
+                    continue
+                
+                # 2. Телефоны и факсы
+                if re.search(r'[\+\-\(\)\s]*[\d\-\(\)\s]{7,}', name) and ('тел' in name_lower or 'факс' in name_lower or '+' in name):
+                    if row_idx < 5:
+                        logger.info(f"Row {row_idx}: Skipped - phone/fax detected: '{name}'")
+                    continue
+                
+                # 3. Email адреса
+                if '@' in name and '.' in name:
+                    if row_idx < 5:
+                        logger.info(f"Row {row_idx}: Skipped - email detected: '{name}'")
+                    continue
+                
+                # 4. Адреса
+                if any(addr_word in name_lower for addr_word in ['ул.', 'пр.', 'д.', 'кв.', 'офис', 'этаж']):
+                    if row_idx < 5:
+                        logger.info(f"Row {row_idx}: Skipped - address detected: '{name}'")
+                    continue
+                
+                # 5. Только цифры или знаки препинания
+                if re.match(r'^[\d\s\-\.\,\(\)]+$', name):
+                    if row_idx < 5:
+                        logger.info(f"Row {row_idx}: Skipped - only numbers/punctuation: '{name}'")
+                    continue
+                
+                # 6. Общие фразы и мусор
+                junk_phrases = ['итого', 'всего', 'сумма', 'подпись', 'печать', 'директор', 'менеджер', 'контакты', 'реквизиты']
+                if any(junk in name_lower for junk in junk_phrases):
+                    if row_idx < 5:
+                        logger.info(f"Row {row_idx}: Skipped - junk phrase detected: '{name}'")
+                    continue
+                    
+                results.append({
+                    'supplier': supplier,
+                    'name': name,
+                    'price': price,
+                    'stock': stock
+                })
+                
+                if row_idx < 5:
+                    logger.info(f"Row {row_idx}: ADDED product: '{name}', price={price}")
+                
+            except Exception as e:
+                logger.warning(f"Error processing row {row_idx}: {e}")
+                continue
+        
+        logger.info(f"Successfully extracted {len(results)} products from {len(table_rows)} rows")
+        
+        # Показываем примеры извлеченных товаров
+        if results:
+            logger.info(f"Sample extracted products: {results[:3]}")
+            
         return results 

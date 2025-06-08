@@ -1,0 +1,74 @@
+
+/* Кастомные стили для АРМАСЕТИ ИМПОРТ */
+
+/* Улучшенная типографика */
+#header h1, #header h1 a:link, #header h1 a:visited {
+    font-weight: 700;
+    font-size: 18px;
+    letter-spacing: 0.5px;
+}
+
+/* Кастомные иконки для наших моделей */
+.model-product .addlink:before,
+.model-product .changelink:before {
+    content: "📦";
+    margin-right: 5px;
+}
+
+.model-supplier .addlink:before,
+.model-supplier .changelink:before {
+    content: "🏪";
+    margin-right: 5px;
+}
+
+.model-proposal .addlink:before,
+.model-proposal .changelink:before {
+    content: "📋";
+    margin-right: 5px;
+}
+
+.model-searchquery .addlink:before,
+.model-searchquery .changelink:before {
+    content: "🔍";
+    margin-right: 5px;
+}
+
+/* Улучшенные кнопки */
+.button, input[type=submit], input[type=button], .submit-row input, a.button {
+    border-radius: 6px;
+    transition: all 0.3s ease;
+    font-weight: 500;
+}
+
+.button:hover, input[type=submit]:hover, input[type=button]:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+}
+
+/* Улучшенные таблицы */
+#result_list th {
+    background: linear-gradient(to bottom, #34495e, #2c3e50);
+    color: white;
+    font-weight: 600;
+}
+
+#result_list tr:nth-child(even) {
+    background-color: #f8f9fa;
+}
+
+#result_list tr:hover {
+    background-color: #e3f2fd;
+}
+
+/* Статистика на главной */
+.app-products .module h2 {
+    background: linear-gradient(45deg, #3498db, #2980b9);
+    color: white;
+}
+
+/* Адаптивность */
+@media (max-width: 768px) {
+    #header h1 {
+        font-size: 16px;
+    }
+}

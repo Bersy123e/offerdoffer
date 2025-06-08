@@ -3,6 +3,10 @@ fastapi==0.115.0
 uvicorn==0.30.0
 pydantic==2.0.3
 
+# Django Framework
+django==4.2.7
+django-admin-interface==0.30.0
+
 # Data Processing
 pandas==2.2.0
 openpyxl==3.1.5
@@ -10,14 +14,19 @@ openpyxl==3.1.5
 # Database
 # sqlite3 is part of the standard library
 
-# Natural Language Processing
-# langchain==0.1.20  # Убираем, т.к. временно не будем использовать для тестов
+# AI Integration
 openai==1.10.0
 tiktoken==0.5.0
+langchain
+langchain-openai
 
 # Communication
-python-telegram-bot==20.8
 # smtplib is part of the standard library
+
+# Document Processing
+python-docx
+PyPDF2
+chardet
 
 # Utilities
 python-dotenv==1.1.0
@@ -27,10 +36,3 @@ regex==2023.12.25
 # Testing
 pytest==7.4.0
 pytest-asyncio==0.23.0 
-
-# Added from the code block
-langchain
-langchain-openai
-python-docx
-PyPDF2
-chardet 

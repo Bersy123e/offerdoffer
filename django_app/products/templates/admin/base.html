@@ -1,0 +1,67 @@
+{% extends "admin/base.html" %}
+{% load static %}
+
+{% block extrahead %}
+{{ block.super }}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Добавляем кнопку аналитики в админку
+    var breadcrumbsDiv = document.querySelector('#content h1');
+    if (breadcrumbsDiv && window.location.pathname === '/admin/') {
+        
+        // Создаем блок с кнопкой аналитики
+        var analyticsBlock = document.createElement('div');
+        analyticsBlock.style.cssText = `
+            background: linear-gradient(45deg, #417690, #5a9fc7);
+            padding: 15px;
+            border-radius: 8px;
+            margin: 20px 0;
+            text-align: center;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        `;
+        
+        var title = document.createElement('h2');
+        title.style.cssText = 'color: white; margin: 0 0 10px 0; font-size: 18px;';
+        title.textContent = '📊 Система аналитики';
+        
+        var button = document.createElement('a');
+        button.href = '/admin/analytics/';
+        button.style.cssText = `
+            display: inline-block;
+            background: white;
+            color: #417690;
+            padding: 12px 24px;
+            border-radius: 6px;
+            text-decoration: none;
+            font-weight: bold;
+            font-size: 16px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+            transition: transform 0.2s;
+        `;
+        button.textContent = '📈 Открыть панель аналитики';
+        
+        button.addEventListener('mouseenter', function() {
+            this.style.transform = 'translateY(-2px)';
+        });
+        
+        button.addEventListener('mouseleave', function() {
+            this.style.transform = 'translateY(0)';
+        });
+        
+        var description = document.createElement('p');
+        description.style.cssText = 'color: rgba(255,255,255,0.9); margin: 10px 0 0 0; font-size: 14px;';
+        description.textContent = 'Статистика по товарам, поставщикам, предложениям и поисковым запросам';
+        
+        analyticsBlock.appendChild(title);
+        analyticsBlock.appendChild(button);
+        analyticsBlock.appendChild(description);
+        
+        // Вставляем блок после заголовка
+        var contentDiv = document.querySelector('#content');
+        if (contentDiv) {
+            contentDiv.insertBefore(analyticsBlock, contentDiv.firstChild);
+        }
+    }
+});
+</script>
+{% endblock %} 

@@ -7,7 +7,7 @@ from .models import Supplier, Product, Proposal, SearchQuery
 from django import forms
 import pandas as pd
 import re # ВОССТАНАВЛИВАЕМ re для старого парсера/извлечения
-from django.http import HttpResponse, FileResponse
+from django.http import HttpResponse, FileResponse, JsonResponse
 from django.template.loader import render_to_string
 import tempfile
 import openpyxl
@@ -28,6 +28,8 @@ from logger import setup_logger  # <--- добавил импорт
 from typing import List, Tuple, Optional
 from django.urls import reverse # Добавили reverse
 import json
+# Закомментирую проблемный импорт
+from .analytics import SystemAnalytics, get_quick_stats
 
 # --- Добавляем загрузку .env перед инициализацией --- 
 from dotenv import load_dotenv
@@ -88,21 +90,54 @@ def find_header_row_and_read_data(file_path: str, file_ext: str, encoding: Optio
     ]
     max_scan_rows = 20
     if file_ext in ['.xlsx', '.xls']:
-        df_all = pd.read_excel(file_path, header=None, nrows=max_scan_rows)
-        for idx, row in df_all.iterrows():
-            row_strs = [str(cell).lower() for cell in row if pd.notna(cell)]
-            matches = sum(any(kw in cell for kw in header_keywords) for cell in row_strs)
-            if matches >= 2:
-                # Нашли строку с заголовками
-                header_row_idx = idx
-                headers = [str(cell) for cell in row]
-                # Читаем данные начиная со следующей строки
-                df = pd.read_excel(file_path, header=header_row_idx, dtype=str)
-                return headers, df.head(n_sample_rows)
-        # Если не нашли — читаем как обычно
-        df = pd.read_excel(file_path, header=0, dtype=str)
-        headers = df.columns.tolist()
-        return headers, df.head(n_sample_rows)
+        try:
+            # Выбираем движок в зависимости от формата
+            engine = None
+            if file_ext == '.xls':
+                try:
+                    df_all = pd.read_excel(file_path, header=None, nrows=max_scan_rows, engine='xlrd')
+                except:
+                    try:
+                        df_all = pd.read_excel(file_path, header=None, nrows=max_scan_rows, engine='openpyxl')
+                    except:
+                        df_all = pd.read_excel(file_path, header=None, nrows=max_scan_rows)
+            else:
+                df_all = pd.read_excel(file_path, header=None, nrows=max_scan_rows)
+            
+            for idx, row in df_all.iterrows():
+                row_strs = [str(cell).lower() for cell in row if pd.notna(cell)]
+                matches = sum(any(kw in cell for kw in header_keywords) for cell in row_strs)
+                if matches >= 2:
+                    # Нашли строку с заголовками
+                    header_row_idx = idx
+                    headers = [str(cell) for cell in row]
+                    # Читаем данные начиная со следующей строки
+                    if file_ext == '.xls':
+                        try:
+                            df = pd.read_excel(file_path, header=header_row_idx, dtype=str, engine='xlrd')
+                        except:
+                            try:
+                                df = pd.read_excel(file_path, header=header_row_idx, dtype=str, engine='openpyxl')
+                            except:
+                                df = pd.read_excel(file_path, header=header_row_idx, dtype=str)
+                    else:
+                        df = pd.read_excel(file_path, header=header_row_idx, dtype=str)
+                    return headers, df.head(n_sample_rows)
+            # Если не нашли — читаем как обычно
+            if file_ext == '.xls':
+                try:
+                    df = pd.read_excel(file_path, header=0, dtype=str, engine='xlrd')
+                except:
+                    try:
+                        df = pd.read_excel(file_path, header=0, dtype=str, engine='openpyxl')
+                    except:
+                        df = pd.read_excel(file_path, header=0, dtype=str)
+            else:
+                df = pd.read_excel(file_path, header=0, dtype=str)
+            headers = df.columns.tolist()
+            return headers, df.head(n_sample_rows)
+        except Exception as e:
+            raise ValueError(f"Ошибка чтения Excel файла: {e}")
     elif file_ext == '.csv':
         # Определяем кодировку и разделитель, если не заданы
         if not encoding:
@@ -171,14 +206,27 @@ def upload_price_list(request):
             file_base = os.path.splitext(uploaded_file.name)[0]
             supplier_name = None
             date_str = None
-            match = re.match(r"([\w\s\-]+)[_\s-](20\d{2}[\.-]\d{2}[\.-]\d{2})", file_base)
-            if match:
-                supplier_name = match.group(1).strip()
-                date_str = match.group(2).replace('.', '-').replace('_', '-')
+            # Ищем дату в разных форматах: ДД.ММ.ГГГГ или ДД.ММ.ГГ
+            date_match = re.search(r'(\d{2}[._-]\d{2}[._-](?:20)?\d{2})', file_base)
+            if date_match:
+                date_raw = date_match.group(1)
+                # Нормализуем дату: заменяем _ и . на -, добавляем 20 для коротких годов
+                date_str = date_raw.replace('_', '.').replace('-', '.')
+                if len(date_str.split('.')[-1]) == 2:  # короткий год (25 -> 2025)
+                    parts = date_str.split('.')
+                    date_str = f"{parts[0]}.{parts[1]}.20{parts[2]}"
+                
+                # Определяем поставщика (все что после даты или до даты)
+                if date_match.start() == 0:  # дата в начале
+                    supplier_part = file_base[date_match.end():].strip(' -_')
+                else:  # дата в середине
+                    supplier_part = file_base[:date_match.start()].strip(' -_')
+                
+                supplier_name = supplier_part if supplier_part else file_base.split()[0] if file_base.split() else 'Неизвестный'
             else:
+                # Если дата не найдена, берем первое слово как поставщика
                 parts = file_base.split()
-                if len(parts) > 0:
-                    supplier_name = parts[0]
+                supplier_name = parts[0] if parts else 'Неизвестный'
             if not supplier_name or not date_str:
                 if not request.POST.get('supplier_name') or not request.POST.get('date_str'):
                     form.fields['supplier_name'].required = True
@@ -197,10 +245,25 @@ def upload_price_list(request):
             try:
                 file_ext = os.path.splitext(uploaded_file.name)[1].lower()
                 if file_ext in ['.xlsx', '.xls']:
-                    if file_ext == '.xls':
-                        df = pd.read_excel(file_path_in_uploads, dtype=str, engine='xlrd')
-                    else:
-                        df = pd.read_excel(file_path_in_uploads, dtype=str)
+                    try:
+                        if file_ext == '.xls':
+                            # Для старого формата .xls пробуем разные движки
+                            try:
+                                df = pd.read_excel(file_path_in_uploads, dtype=str, engine='xlrd')
+                            except:
+                                try:
+                                    df = pd.read_excel(file_path_in_uploads, dtype=str, engine='openpyxl')
+                                except:
+                                    df = pd.read_excel(file_path_in_uploads, dtype=str)
+                        else:
+                            df = pd.read_excel(file_path_in_uploads, dtype=str)
+                    except Exception as excel_err:
+                        logger.error(f"Ошибка чтения Excel файла: {excel_err}")
+                        messages.error(request, f'Ошибка чтения файла: {excel_err}')
+                        if os.path.exists(file_path_in_uploads):
+                            try: os.remove(file_path_in_uploads)
+                            except OSError: pass
+                        return render(request, 'products/upload_price_list.html', {'form': form, 'suppliers': Supplier.objects.all()})
                 elif file_ext == '.csv':
                     df = pd.read_csv(file_path_in_uploads, dtype=str)
                 elif file_ext in ['.doc', '.docx']:
@@ -230,21 +293,36 @@ def upload_price_list(request):
 
                 table_dicts = df.fillna('').to_dict(orient='records')
 
-                # --- Проверка LLM ---
-                if not query_processor.llm:
-                    logger.error("LLM не инициализирован! Проверьте настройки и переменные окружения.")
-                    messages.error(request, 'Ошибка: LLM не инициализирован. Проверьте настройки сервера и API-ключи.')
-                    if os.path.exists(file_path_in_uploads):
-                        try: os.remove(file_path_in_uploads)
-                        except OSError: pass
-                    return render(request, 'products/upload_price_list.html', {'form': form, 'suppliers': Supplier.objects.all()})
-
+                # --- Используем каскадную систему (уровни 1-2) ---
+                from .cascade_processor import CascadeProcessor
+                
+                cascade_processor = CascadeProcessor(llm=query_processor.llm)
+                
                 try:
-                    products = query_processor.extract_products_from_table(table_dicts)
-                    logger.info(f"products from LLM: {products}")
+                    # Обрабатываем с помощью каскадной системы
+                    result = cascade_processor.process_file_cascade(file_path_in_uploads, uploaded_file.name)
+                    
+                    if not result['success']:
+                        error_msg = "Каскадная система не смогла извлечь товары из файла"
+                        logger.error(error_msg)
+                        logger.error(f"Лог каскадной обработки: {result.get('cascade_log', [])}")
+                        messages.error(request, error_msg)
+                        if os.path.exists(file_path_in_uploads):
+                            try: os.remove(file_path_in_uploads)
+                            except OSError: pass
+                        return render(request, 'products/upload_price_list.html', {'form': form, 'suppliers': Supplier.objects.all()})
+                    
+                    products = result['products']
+                    method = result['final_method']
+                    logger.info(f"Каскадная система ({method}) извлекла {len(products)} товаров")
+                    
+                    # Логируем детали
+                    summary = cascade_processor.get_cascade_summary(result)
+                    logger.info(f"Сводка обработки:\n{summary}")
+                    
                 except Exception as e:
-                    logger.error(f"Ошибка LLM при разборе прайса: {e}")
-                    messages.error(request, f'Ошибка LLM при разборе прайса: {e}')
+                    logger.error(f"Ошибка каскадной системы: {e}")
+                    messages.error(request, f'Ошибка каскадной системы: {e}')
                     if os.path.exists(file_path_in_uploads):
                         try: os.remove(file_path_in_uploads)
                         except OSError: pass
@@ -261,21 +339,37 @@ def upload_price_list(request):
                     if not name or not str(name).strip():
                         skipped_count += 1
                         continue
-                    try:
-                        price_val = float(price)
-                    except (TypeError, ValueError):
-                        skipped_count += 1
-                        continue
+                    
+                    # Обработка цены - если нет данных ставим "-"
+                    if price is not None and price != 0:
+                        try:
+                            price_val = str(float(price))
+                        except (TypeError, ValueError):
+                            price_val = "-"
+                    else:
+                        price_val = "-"
+                    
+                    # Обработка количества - если нет данных или дефолт ставим "-"
                     stock = item.get('stock')
-                    try:
-                        stock_val = int(stock) if stock is not None else 100
-                    except (TypeError, ValueError):
-                        stock_val = 100
+                    if stock is not None and stock != 100 and stock != 0:  # Исключаем дефолтные значения
+                        try:
+                            stock_num = int(stock)
+                            stock_val = str(stock_num) if stock_num > 0 else "-"
+                        except (TypeError, ValueError):
+                            stock_val = "-"
+                    else:
+                        stock_val = "-"
+                    
+                    # Артикул
+                    article = item.get('article', '') or ''
+                    
                     products_to_create.append(Product(
                         supplier=supplier,
                         name=str(name).strip(),
                         price=price_val,
-                        stock=stock_val
+                        stock=stock_val,
+                        article=article,
+                        price_list_date=date_str  # Дата из прайс-листа
                     ))
                     created_count += 1
                     if len(products_to_create) >= 500:
@@ -335,7 +429,16 @@ def manual_column_mapping(request):
                 header_row_idx = -1
                 header_keywords = ['наимен', 'товар', 'цена', 'кол-во'] # Упрощенный набор для поиска
                 if file_ext in ['.xlsx', '.xls']:
-                    df_check = pd.read_excel(file_path, header=None, nrows=20, dtype=str)
+                    if file_ext == '.xls':
+                        try:
+                            df_check = pd.read_excel(file_path, header=None, nrows=20, dtype=str, engine='xlrd')
+                        except:
+                            try:
+                                df_check = pd.read_excel(file_path, header=None, nrows=20, dtype=str, engine='openpyxl')
+                            except:
+                                df_check = pd.read_excel(file_path, header=None, nrows=20, dtype=str)
+                    else:
+                        df_check = pd.read_excel(file_path, header=None, nrows=20, dtype=str)
                     for idx, row in df_check.iterrows():
                          row_strs = [str(cell).lower() for cell in row if pd.notna(cell)]
                          matches = sum(any(kw in cell for kw in header_keywords) for cell in row_strs)
@@ -343,7 +446,16 @@ def manual_column_mapping(request):
                               header_row_idx = idx
                               break
                     if header_row_idx == -1: header_row_idx = 0 # Если не нашли, считаем с первой
-                    df = pd.read_excel(file_path, header=header_row_idx, usecols=relevant_file_headers, dtype=str)
+                    if file_ext == '.xls':
+                        try:
+                            df = pd.read_excel(file_path, header=header_row_idx, usecols=relevant_file_headers, dtype=str, engine='xlrd')
+                        except:
+                            try:
+                                df = pd.read_excel(file_path, header=header_row_idx, usecols=relevant_file_headers, dtype=str, engine='openpyxl')
+                            except:
+                                df = pd.read_excel(file_path, header=header_row_idx, usecols=relevant_file_headers, dtype=str)
+                    else:
+                        df = pd.read_excel(file_path, header=header_row_idx, usecols=relevant_file_headers, dtype=str)
                 elif file_ext == '.csv':
                     # ... (Аналогичный код для CSV: определить кодировку/разделитель, найти header_row_idx) ...
                     with open(file_path, 'rb') as f_rb:
@@ -410,12 +522,26 @@ def manual_column_mapping(request):
                                 stock = int(stock_str_cleaned) if stock_str_cleaned else 0
                             except ValueError:
                                 stock = 0
+                    # Получаем дату из имени файла в разных форматах
+                    file_name = os.path.basename(file_path)
+                    date_match = re.search(r'(\d{2}[._-]\d{2}[._-](?:20)?\d{2})', file_name)
+                    if date_match:
+                        date_raw = date_match.group(1)
+                        # Нормализуем дату
+                        file_date = date_raw.replace('_', '.').replace('-', '.')
+                        if len(file_date.split('.')[-1]) == 2:  # короткий год
+                            parts = file_date.split('.')
+                            file_date = f"{parts[0]}.{parts[1]}.20{parts[2]}"
+                    else:
+                        file_date = "-"
+                    
                     products_to_create.append(
                         Product(
                             supplier=supplier,
                             name=str(name).strip(),
                             price=price,
-                            stock=stock
+                            stock=stock,
+                            price_list_date=file_date  # Дата из имени файла
                         )
                     )
                     created_count += 1
@@ -486,45 +612,62 @@ def generate_proposal_excel(products_with_qty, query_text):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = 'Коммерческое предложение'
-    ws.append(['№', 'Поставщик', 'Наименование товара', 'Цена (руб)', 'Кол-во', 'Сумма (руб)'])
+    # Правильная структура: № | Поставщик | Дата | Товар | Количество | Цена | Сумма
+    ws.append(['№', 'Поставщик', 'Дата загрузки', 'Наименование товара', 'Количество', 'Цена (руб)', 'Сумма (руб)'])
     # Стилизация шапки
     for cell in ws[1]:
         cell.font = Font(bold=True)
         cell.alignment = Alignment(horizontal='center')
         cell.border = Border(bottom=Side(style='thin'))
-    # Данные - убираем обращение к удаленным полям
+    # Данные - обрабатываем как найденные, так и отсутствующие товары
     total = 0
     for i, item_data in enumerate(products_with_qty, 1):
-        product = item_data['product']
-        requested_quantity = item_data['quantity'] # Берем количество, переданное для этой позиции
+        product = item_data.get('product')
+        requested_quantity = item_data.get('quantity', 1)
 
-        available_stock = product.stock if product.stock is not None else 9999 # Если остаток null, считаем много
-        
-        # Если количество не было извлечено, ставим 1 по умолчанию
-        if requested_quantity is None:
-             qty_to_use = 1
+        if product:
+            # ТОВАР НАЙДЕН
+            # Обработка цены для подсчета суммы
+            try:
+                price_num = float(product.price) if product.price != "-" else 0
+                summa = price_num * requested_quantity
+                total += summa
+                summa_str = f"{summa:.2f}" if summa > 0 else "-"
+            except (ValueError, TypeError):
+                summa_str = "-"
+            
+            # Дата загрузки прайс-листа (из самого прайс-листа, а не время создания записи)
+            date_str = product.price_list_date if product.price_list_date else "-"
+            
+            ws.append([
+                i,
+                product.supplier.name,
+                date_str,
+                product.name,
+                requested_quantity,  # ЗАПРОШЕННОЕ количество (НЕ остаток!)
+                product.price,       # Цена за единицу
+                summa_str           # Общая сумма
+            ])
         else:
-             qty_to_use = requested_quantity
-
-        # Ограничиваем остатком
-        qty = min(qty_to_use, available_stock)
-        qty = max(0, qty) # Не можем заказать отрицательное или если стока 0
-
-        summa = float(product.price) * qty
-        total += summa
-        ws.append([
-            i,
-            product.supplier.name,
-            product.name,
-            product.price,
-            qty,
-            summa
-        ])
+            # ТОВАР ОТСУТСТВУЕТ
+            product_name = item_data.get('product_name', 'Неизвестный товар')
+            ws.append([
+                i,
+                'НЕТ В БАЗЕ',
+                '-',
+                product_name,
+                requested_quantity,  # Показываем запрошенное количество
+                'НЕТ В НАЛИЧИИ',
+                '-'
+            ])
     # Итог
-    ws.append(['Итого', '', '', '', '', total]) # Уменьшаем количество пустых ячеек
-    # Настраиваем ширину столбцов (опционально)
+    ws.append(['', '', '', 'ИТОГО:', '', '', f"{total:.2f}" if total > 0 else "Расчет невозможен"])
+    # Настраиваем ширину столбцов
     ws.column_dimensions['B'].width = 20 # Поставщик
-    ws.column_dimensions['C'].width = 60 # Наименование
+    ws.column_dimensions['D'].width = 60 # Наименование
+    ws.column_dimensions['E'].width = 12 # Количество
+    ws.column_dimensions['F'].width = 15 # Цена
+    ws.column_dimensions['G'].width = 15 # Сумма
     # Сохраняем во временный файл
     tmp_path = os.path.join(tempfile.gettempdir(), f'KP_{os.urandom(4).hex()}.xlsx')
     wb.save(tmp_path)
@@ -639,22 +782,60 @@ def client_request_to_proposal(request):
             if file:
                 try:
                     ext = file.name.lower().split('.')[-1]
+                    logger.info(f"Обрабатываем файл: {file.name}, расширение: {ext}")
                     if ext == 'txt':
                         raw = file.read()
                         encoding = chardet.detect(raw)['encoding'] or 'utf-8'
                         extracted_text = raw.decode(encoding)
                     elif ext == 'docx':
                         doc = docx.Document(file)
-                        extracted_text = '\n'.join([p.text for p in doc.paragraphs])
+                        # Извлекаем текст из параграфов
+                        paragraphs_text = [p.text for p in doc.paragraphs if p.text.strip()]
+                        # Извлекаем текст из таблиц
+                        tables_text = []
+                        for table in doc.tables:
+                            for row in table.rows:
+                                for cell in row.cells:
+                                    if cell.text.strip():
+                                        tables_text.append(cell.text.strip())
+                        extracted_text = '\n'.join(paragraphs_text + tables_text)
                     elif ext == 'pdf':
                         reader = PyPDF2.PdfReader(file)
                         extracted_text = '\n'.join([page.extract_text() for page in reader.pages if page.extract_text()])
-                    elif ext == 'xlsx':
-                        wb = openpyxl.load_workbook(file)
-                        ws = wb.active
-                        extracted_text = '\n'.join([str(cell.value) for row in ws.iter_rows() for cell in row if cell.value])
+                    elif ext in ['xlsx', 'xls']:
+                        try:
+                            if ext == 'xls':
+                                # Для старого формата .xls используем pandas
+                                try:
+                                    df = pd.read_excel(file, engine='xlrd')
+                                except:
+                                    try:
+                                        df = pd.read_excel(file, engine='openpyxl')
+                                    except:
+                                        df = pd.read_excel(file)
+                                extracted_text = '\n'.join([str(cell) for cell in df.values.flatten() if pd.notna(cell)])
+                            else:
+                                # Для .xlsx используем openpyxl
+                                wb = openpyxl.load_workbook(file)
+                                ws = wb.active
+                                extracted_text = '\n'.join([str(cell.value) for row in ws.iter_rows() for cell in row if cell.value])
+                        except Exception as excel_err:
+                            error = f'Ошибка чтения Excel файла: {excel_err}'
+                            logger.error(f"Excel reading error: {excel_err}")
+                    elif ext == 'csv':
+                        raw = file.read()
+                        encoding = chardet.detect(raw)['encoding'] or 'utf-8'
+                        extracted_text = raw.decode(encoding)
                     else:
-                        error = 'Неподдерживаемый формат файла.'
+                        error = f'Неподдерживаемый формат файла: .{ext}. Поддерживаются: txt, docx, pdf, xlsx, xls, csv'
+                    
+                    # Отладка извлеченного текста
+                    if not error:
+                        logger.info(f"Извлеченный текст (первые 200 символов): '{extracted_text[:200] if extracted_text else 'ПУСТОЙ'}'")
+                        logger.info(f"Длина извлеченного текста: {len(extracted_text) if extracted_text else 0}")
+                        if extracted_text:
+                            logger.info(f"После strip длина: {len(extracted_text.strip())}")
+                        
                 except Exception as e:
                     error = f'Ошибка чтения файла: {e}'
                     logger.exception("Ошибка чтения файла запроса")
@@ -686,38 +867,41 @@ def client_request_to_proposal(request):
                              logger.info(f"process_query for '{item_query}' returned {len(found_products)} product(s).")
                              
                              if found_products:
-                                 # Логируем все найденные продукты для этой позиции
-                                 for p_idx, p in enumerate(found_products):
-                                     logger.info(f"  Match {p_idx+1}: ID={p.id}, Name='{p.name}'")
-                                     
-                                 best_product = found_products[0] # Берем лучший
-                                 logger.info(f"  Selected best match: ID={best_product.id}")
-                                 # ... (извлечение quantity из item_query, если нужно) ...
+                                 # ПРОСТАЯ ЛОГИКА: берем самый релевантный товар (первый в списке после ранжирования)
+                                 best_product = found_products[0]
+                                 logger.info(f"Selected product: ID={best_product.id}, Name='{best_product.name}'")
+                                 
+                                 # Извлекаем количество
                                  if requested_quantity is None:
                                       extracted_qty = extract_quantity(item_query)
                                       if extracted_qty is not None: 
                                            requested_quantity = extracted_qty
-                                           logger.info(f"  Quantity extracted from item_query: {requested_quantity}")
+                                           logger.info(f"Quantity extracted: {requested_quantity}")
                                  
                                  final_products_for_proposal.append({
                                      "product": best_product,
-                                     "quantity": requested_quantity
+                                     "quantity": requested_quantity or 1  # По умолчанию 1 шт
                                  })
                              else:
+                                 # ТОВАР НЕ НАЙДЕН - добавляем как отсутствующий
                                  logger.warning(f"No product found for item: '{item_query}'")
-                                 errors_for_items.append(f"Не найден товар для '{item_query}'")
+                                 
+                                 # Извлекаем количество даже для отсутствующих товаров
+                                 if requested_quantity is None:
+                                      requested_quantity = extract_quantity(item_query) or 1
+                                 
+                                 # Добавляем отсутствующий товар в КП
+                                 final_products_for_proposal.append({
+                                     "product": None,  # Нет товара
+                                     "product_name": item_query,  # Название из запроса
+                                     "quantity": requested_quantity,
+                                     "status": "ТОВАР ОТСУТСТВУЕТ"
+                                 })
                         except Exception as item_proc_err:
                               logger.exception(f"Error processing item '{item_query}'")
                               errors_for_items.append(f"Ошибка обработки '{item_query}': {item_proc_err}")
 
-                    # Сообщение об ошибках по позициям, если были
-                    if errors_for_items:
-                         error = "; ".join(errors_for_items)
-                         # Не перезаписываем, если уже была ошибка чтения файла
-                         if not request.POST.get('error'): # Плохая проверка, лучше передавать error нормально
-                              messages.warning(request, f"Проблемы при обработке запроса: {error}")
-                              
-                    # 3. Генерируем КП, если хоть что-то нашли
+                    # 3. Генерируем КП всегда (даже если товары отсутствуют)
                     if final_products_for_proposal:
                         logger.info(f"Generating proposal for {len(final_products_for_proposal)} items.")
                         try:
@@ -725,8 +909,12 @@ def client_request_to_proposal(request):
                             # ... (код сохранения истории и возврата файла HttpResponse) ...
                             with open(excel_path, 'rb') as f:
                                  # ... (сохранение Proposal/SearchQuery) ...
-                                 proposal = Proposal.objects.create(total_sum=sum([p["product"].price * (p["quantity"] or 1) for p in final_products_for_proposal])) # Приблизительный расчет суммы
-                                 proposal.products.set([p["product"] for p in final_products_for_proposal])
+                                 # Считаем только товары, которые есть в наличии
+                                 total_sum = sum([p["product"].price * (p["quantity"] or 1) for p in final_products_for_proposal if p.get("product")])
+                                 proposal = Proposal.objects.create(total_sum=total_sum)
+                                 # Добавляем только найденные товары
+                                 found_products = [p["product"] for p in final_products_for_proposal if p.get("product")]
+                                 proposal.products.set(found_products)
                                  proposal.file.save(f"KP_{proposal.id}.xlsx", File(f))
                                  search_query, created = SearchQuery.objects.get_or_create(
                                       query_text=extracted_text[:2000], 
@@ -770,49 +958,24 @@ def client_request_to_proposal(request):
 def faq(request):
     return render(request, 'products/faq.html')
 
-@csrf_exempt
-def upload_price_list_simple(request):
-    if request.method == 'POST':
-        form = PriceListUploadForm(request.POST, request.FILES)
-        if form.is_valid():
-            uploaded_file = request.FILES['file']
-            supplier_name = request.POST.get('supplier_name') or 'Неизвестный поставщик'
-            try:
-                file_ext = os.path.splitext(uploaded_file.name)[1].lower()
-                if file_ext in ['.xlsx', '.xls']:
-                    df = pd.read_excel(uploaded_file)
-                elif file_ext == '.csv':
-                    df = pd.read_csv(uploaded_file)
-                else:
-                    messages.error(request, f'Неподдерживаемый формат файла: {file_ext}')
-                    return render(request, 'products/upload_price_list.html', {'form': form})
-                created_count = 0
-                skipped_count = 0
-                for idx, row in df.iterrows():
-                    name = str(row.get('Наименование изделия', '') or row.get('Наименование товара', '') or row.get('Наименование', '')).strip()
-                    price = row.get('Цена руб.') or row.get('Цена (руб)') or row.get('Цена')
-                    if not name or pd.isna(price):
-                        skipped_count += 1
-                        continue
-                    try:
-                        price_val = float(price)
-                    except Exception:
-                        skipped_count += 1
-                        continue
-                    Product.objects.create(
-                        supplier=Supplier.objects.get_or_create(name=supplier_name)[0],
-                        name=name,
-                        price=price_val,
-                        stock=100
-                    )
-                    created_count += 1
-                messages.success(request, f'Прайс-лист успешно загружен. Добавлено {created_count} товаров, пропущено {skipped_count} строк.')
-                return redirect('upload_price_list_simple')
-            except Exception as e:
-                messages.error(request, f'Ошибка обработки файла: {e}')
-                return render(request, 'products/upload_price_list.html', {'form': form})
-        else:
-            messages.error(request, 'Форма заполнена неверно.')
-    else:
-        form = PriceListUploadForm()
-    return render(request, 'products/upload_price_list.html', {'form': form})
+
+# Аналитика перенесена в админ панель - /admin/analytics/
+
+def analytics_dashboard(request):
+    """Простая страница аналитики"""
+    try:
+        analytics = SystemAnalytics()
+        dashboard_data = analytics.get_dashboard_data()
+        
+        context = {
+            'title': 'Аналитика системы',
+            'analytics': dashboard_data,
+        }
+        
+        return render(request, 'products/analytics_dashboard.html', context)
+        
+    except Exception as e:
+        messages.error(request, f"Ошибка загрузки аналитики: {e}")
+        return redirect('home')
+
+
