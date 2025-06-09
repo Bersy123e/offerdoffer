@@ -688,7 +688,15 @@ def create_proposal(request):
             excel_path = generate_proposal_excel(products, query_text)
             # Сохраняем Proposal и SearchQuery
             with open(excel_path, 'rb') as f:
-                proposal = Proposal.objects.create(total_sum=sum([p.price for p in products]))
+                # Считаем общую сумму с правильным типом данных
+                total_sum = 0
+                for p in products:
+                    try:
+                        price_num = float(p.price) if p.price != "-" else 0
+                        total_sum += price_num
+                    except (ValueError, TypeError):
+                        continue
+                proposal = Proposal.objects.create(total_sum=total_sum)
                 proposal.products.set(products)
                 proposal.file.save(f"KP_{proposal.id}.xlsx", File(f))
             search_query, created = SearchQuery.objects.get_or_create(
@@ -910,7 +918,14 @@ def client_request_to_proposal(request):
                             with open(excel_path, 'rb') as f:
                                  # ... (сохранение Proposal/SearchQuery) ...
                                  # Считаем только товары, которые есть в наличии
-                                 total_sum = sum([p["product"].price * (p["quantity"] or 1) for p in final_products_for_proposal if p.get("product")])
+                                 total_sum = 0
+                                 for p in final_products_for_proposal:
+                                     if p.get("product"):
+                                         try:
+                                             price_num = float(p["product"].price) if p["product"].price != "-" else 0
+                                             total_sum += price_num * (p["quantity"] or 1)
+                                         except (ValueError, TypeError):
+                                             continue
                                  proposal = Proposal.objects.create(total_sum=total_sum)
                                  # Добавляем только найденные товары
                                  found_products = [p["product"] for p in final_products_for_proposal if p.get("product")]

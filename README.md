@@ -63,6 +63,10 @@ OPENAI_API_KEY=ваш-ключ-openai
 # Для отправки email (опционально)
 SMTP_USER=ваш-email@gmail.com
 SMTP_PASSWORD=ваш-пароль-приложения
+
+# Дополнительные настройки
+HTTP_PROXY=ваш-прокси-если-нужен
+DEBUG=True
 ```
 
 ### 3. Запуск системы
@@ -81,7 +85,9 @@ uvicorn main:app --reload
 ```bash
 cd django_app
 python manage.py migrate
-python manage.py runserver
+python manage.py createsuperuser
+python manage.py collectstatic
+python manage.py runserver 8000
 
 # Веб-интерфейс на http://localhost:8000
 ```
