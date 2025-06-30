@@ -774,22 +774,74 @@ class QueryProcessor:
             logger.warning("No table rows to process")
             return []
             
-        # Простой подход: первые колонки = название, цена, остаток
+        # --- ШАГ 1. Определяем колонки по ключевым словам в заголовке ---
         first_row = table_rows[0]
         headers = list(first_row.keys())
         logger.info(f"Available headers: {headers}")
+
+        # Наборы ключевых слов
+        price_kw = ['цена', 'price', 'стоим', 'cost', 'value']
+        stock_kw = ['остат', 'кол-во', 'налич', 'stock', 'qty', 'amount', 'balance']
+        name_kw = ['наимен', 'товар', 'product', 'item', 'описан', 'nomenkl', 'назв']
+
+        def find_header(keywords):
+            for h in headers:
+                if h is None:
+                    continue
+                hl = str(h).lower()
+                if any(k in hl for k in keywords):
+                    return h
+            return None
+
+        name_col = find_header(name_kw) or headers[0]
+        price_col = find_header(price_kw)
+        stock_col = find_header(stock_kw)
+
+        # Если всё равно не нашли цену/остаток – используем позицию 1/2 как раньше
+        if price_col is None and len(headers) > 1:
+            price_col = headers[1]
+        if stock_col is None and len(headers) > 2:
+            stock_col = headers[2]
         
-        if len(headers) < 2:
-            logger.error("Not enough columns in the file")
-            return []
-        
-        # ПРОСТОЕ НАЗНАЧЕНИЕ: первая колонка = название, вторая = цена
-        name_col = headers[0]
-        price_col = headers[1] if len(headers) > 1 else None
-        stock_col = headers[2] if len(headers) > 2 else None
-        
-        logger.info(f"Using simple mapping: name='{name_col}', price='{price_col}', stock='{stock_col}'")
-        
+        # --- ШАГ 1.2. Fallback: анализ данных, ищем числовые столбцы ---
+        sample_limit = min(30, len(table_rows))
+        def detect_numeric_column(candidate_headers, allow_zero=True):
+            best_header = None
+            best_score = 0
+            for h in candidate_headers:
+                numeric_hits = 0
+                non_empty = 0
+                for i in range(sample_limit):
+                    val = table_rows[i].get(h, '')
+                    if val is None:
+                        continue
+                    val_str = str(val).strip()
+                    if not val_str:
+                        continue
+                    non_empty += 1
+                    if re.search(r"\d", val_str):
+                        numeric_hits += 1
+                if non_empty == 0:
+                    continue
+                ratio = numeric_hits / non_empty
+                if ratio > best_score:
+                    best_score = ratio
+                    best_header = h
+            return best_header if best_score >= 0.6 else None
+
+        # Переопределяем price_col/stock_col, если не нашли по заголовку
+        if price_col is None:
+            price_col = detect_numeric_column(headers)
+            logger.info(f"Fallback numeric detection выбрал price_col='{price_col}' (score>=0.6)")
+        if stock_col is None:
+            # Для остатка допускаем большее количество нулей, поэтому allow_zero True
+            stock_col = detect_numeric_column(headers)
+            logger.info(f"Fallback numeric detection выбрал stock_col='{stock_col}' (score>=0.6)")
+
+        logger.info(
+            f"Итоговый маппинг колонок: name='{name_col}', price='{price_col}', stock='{stock_col}'"
+        )
+
         results = []
         
         for row_idx, row_dict in enumerate(table_rows):
@@ -803,13 +855,18 @@ class QueryProcessor:
                 if price_col:
                     price_raw = str(row_dict.get(price_col, '')).strip()
                     if price_raw:
-                        # Извлекаем числа из строки цены
-                        price_numbers = re.findall(r'[\d\,\.]+', price_raw.replace(' ', ''))
+                        # Зачистка: убираем валюту, пробелы, «руб/₽/tг/eur» и т. д.
+                        clean_price = re.sub(r'[^0-9,\.]', '', price_raw.replace('\xa0', ''))
+                        price_numbers = re.findall(r'[\d\,\.]+', clean_price)
                         if price_numbers:
                             try:
                                 price = float(price_numbers[0].replace(',', '.'))
                             except:
                                 price = 0
+                        else:
+                            logger.debug(
+                                f"Row {row_idx}: цена не распознана из '{price_raw}'. price_numbers пустой."
+                            )
                 
                 # Логируем первые несколько строк для диагностики
                 if row_idx < 5:
@@ -820,12 +877,25 @@ class QueryProcessor:
                 if stock_col:
                     stock_raw = str(row_dict.get(stock_col, '')).strip()
                     if stock_raw:
-                        stock_numbers = re.findall(r'\d+', stock_raw)
-                        if stock_numbers:
-                            try:
-                                stock = int(stock_numbers[0])
-                            except:
-                                stock = 100
+                        stock_lower = stock_raw.lower()
+                        # текстовые варианты
+                        if any(w in stock_lower for w in ['нет', '0', 'под заказ', 'ожид', 'отсут']):
+                            stock = 0
+                        elif any(w in stock_lower for w in ['есть', 'в наличии', 'налич', 'много']):
+                            stock = 100
+                        else:
+                            stock_numbers = re.findall(r'\d+', stock_raw)
+                            if stock_numbers:
+                                try:
+                                    stock = int(stock_numbers[0])
+                                except:
+                                    stock = 100
+                            elif stock_numbers == []:
+                                logger.debug(f"Row {row_idx}: остаток не распознан из '{stock_raw}'.")
+                else:
+                    logger.debug(
+                        f"Row {row_idx}: stock_col is None, raw_row={row_dict}"
+                    )
                 
                 # Поставщик = пустая строка (не важно для простой логики)
                 supplier = ""
@@ -845,8 +915,8 @@ class QueryProcessor:
                 # УЛУЧШЕННАЯ фильтрация мусора
                 name_lower = name.lower().strip()
                 
-                # 1. Заголовки таблиц
-                if name_lower in ['наименование', 'товар', 'цена', 'название', 'артикул', 'код', 'остаток', 'количество', 'сумма', 'стоимость']:
+                # 1. Заголовки таблиц (расширено)
+                if any(k in name_lower for k in ['наимен', 'товар', 'цена', 'назв', 'артикул', 'код', 'остаток', 'количество', 'сумма', 'стоим']) and len(name_lower.split())<=3:
                     if row_idx < 5:
                         logger.info(f"Row {row_idx}: Skipped - table header: '{name}'")
                     continue
