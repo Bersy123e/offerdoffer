@@ -875,21 +875,19 @@ def client_request_to_proposal(request):
                              logger.info(f"process_query for '{item_query}' returned {len(found_products)} product(s).")
                              
                              if found_products:
-                                 # ПРОСТАЯ ЛОГИКА: берем самый релевантный товар (первый в списке после ранжирования)
-                                 best_product = found_products[0]
-                                 logger.info(f"Selected product: ID={best_product.id}, Name='{best_product.name}'")
-                                 
-                                 # Извлекаем количество
+                                 # ДОБАВЛЯЕМ ВСЕ РЕЛЕВАНТНЫЕ ТОВАРЫ
                                  if requested_quantity is None:
-                                      extracted_qty = extract_quantity(item_query)
-                                      if extracted_qty is not None: 
-                                           requested_quantity = extracted_qty
-                                           logger.info(f"Quantity extracted: {requested_quantity}")
-                                 
-                                 final_products_for_proposal.append({
-                                     "product": best_product,
-                                     "quantity": requested_quantity or 1  # По умолчанию 1 шт
-                                 })
+                                     extracted_qty = extract_quantity(item_query)
+                                     if extracted_qty is not None:
+                                         requested_quantity = extracted_qty
+                                         logger.info(f"Quantity extracted: {requested_quantity}")
+
+                                 for prod in found_products:
+                                     final_products_for_proposal.append({
+                                         "product": prod,
+                                         "quantity": requested_quantity or 1
+                                     })
+                                 logger.info(f"Appended {len(found_products)} products for item '{item_query}'.")
                              else:
                                  # ТОВАР НЕ НАЙДЕН - добавляем как отсутствующий
                                  logger.warning(f"No product found for item: '{item_query}'")

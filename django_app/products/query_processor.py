@@ -14,6 +14,7 @@ from django.db.models import Q
 import operator
 from functools import reduce
 import pandas as pd
+import statistics  # Для вычисления статистики релевантности
 
 from .cache import QueryCache
 from logger import setup_logger
@@ -88,8 +89,11 @@ class QueryProcessor:
         try:
             api_key = os.environ.get("OPENAI_API_KEY", "")
             if not api_key:
-                logger.error("OPENAI_API_KEY not found in environment variables.")
+                logger.error("OPENAI_API_KEY not found in environment variables. Проверьте переменную окружения или .env файл.")
                 raise ValueError("OPENAI_API_KEY is not set")
+            else:
+                masked = api_key[:4] + "***" + api_key[-4:]
+                logger.info(f"OPENAI_API_KEY найден (длина={len(api_key)}): {masked}")
                 
             proxy_url = os.environ.get("HTTP_PROXY") or os.environ.get("HTTPS_PROXY")
             http_client_args = {}
@@ -141,7 +145,7 @@ class QueryProcessor:
              logger.error(f"Value error during LLM initialization: {ve}")
              self.llm = None # Устанавливаем в None, чтобы проверить позже
         except Exception as e:
-            logger.exception(f"Failed to initialize LLM: {e}")
+            logger.exception(f"Failed to initialize LLM: {type(e).__name__}: {e}")
             self.llm = None # Устанавливаем в None, чтобы проверить позже
             
     def _fallback_keyword_mapping(self, headers: list) -> Optional[dict]:
@@ -372,23 +376,31 @@ class QueryProcessor:
 
 Запрос: {query}
 Ответ:"""
-            response = self.llm.invoke(prompt)
-            text = response.content.strip()
             keywords = []
-            try:
-                keywords = json.loads(text)
-            except Exception:
-                match = re.search(r'\[.*\]', text, re.DOTALL)
-                if match:
+            if self.llm is not None:
+                try:
+                    response = self.llm.invoke(prompt)
+                    text = response.content.strip()
                     try:
-                        keywords = json.loads(match.group(0))
+                        keywords = json.loads(text)
                     except Exception:
-                         logger.warning(f"Could not parse JSON from LLM response: {text}")
-                         keywords = [kw.strip() for kw in query.split() if kw.strip()]
-                else:
-                    logger.warning(f"Could not find JSON in LLM response: {text}")
-                    keywords = [kw.strip() for kw in query.split() if kw.strip()]
-            keywords = [kw for kw in keywords if kw and isinstance(kw, str)]
+                        match = re.search(r'\[.*\]', text, re.DOTALL)
+                        if match:
+                            try:
+                                keywords = json.loads(match.group(0))
+                            except Exception:
+                                 logger.warning(f"Could not parse JSON from LLM response: {text}")
+                                 keywords = []
+                        else:
+                            logger.warning(f"Could not find JSON in LLM response: {text}")
+                            keywords = []
+                except Exception as llm_err:
+                    logger.error(f"LLM invoke failed: {llm_err}. Falling back to simple keyword split.")
+            # Если LLM не используется или не вернул ключевые слова
+            if not keywords:
+                keywords = [kw.strip() for kw in query.split() if kw.strip()]
+            # Финальная очистка ключевых слов: удаляем пробелы, пустые строки, приводим к нижнему регистру
+            keywords = [kw.strip() for kw in keywords if isinstance(kw, str) and kw.strip()]
             if not keywords:
                 logger.warning(f"LLM returned empty keywords for query '{query}'. Falling back to splitting query text.")
                 cleaned_query = re.sub(r'\d+\s*(?:шт|штук|компл)\b', '', query, flags=re.IGNORECASE).strip()
@@ -398,8 +410,36 @@ class QueryProcessor:
                     keywords = [query] if query else []
             logger.info(f"Using keywords: {keywords}")
             if keywords:
-                # УМНЫЙ ПОИСК С РЕЛЕВАНТНОСТЬЮ И ФИЛЬТРАЦИЕЙ
+                # ---- ШАГ 1. СТРОГИЙ AND-ПОИСК ----
                 all_products = list(Product.objects.all())
+                # Нормализуем ключевые слова и названия товаров (чтобы 108*6 == 108х6 == 108x6)
+                keywords_norm = [normalize_dimensions(kw.lower()) for kw in keywords]
+
+                def product_matches(p, required_ratio: float = 1.0) -> bool:
+                    name_norm = normalize_dimensions(p.name.lower())
+                    hits = sum(1 for kw in keywords_norm if kw in name_norm)
+                    return hits / len(keywords_norm) >= required_ratio
+
+                # СТРОГИЙ поиск: все ключевые слова должны присутствовать
+                strict_products = [p for p in all_products if product_matches(p, required_ratio=1.0)]
+
+                if strict_products:
+                    logger.info(
+                        f"STRICT-поиск: найдено {len(strict_products)} товар(ов), удовлетворяющих 100% из {len(keywords_norm)} ключевых слов."
+                    )
+                    return strict_products
+
+                # МЯГКИЙ AND-поиск (>=80% совпадений) – спасает, если ключевые слова содержат редкие детали
+                soft_products = [p for p in all_products if product_matches(p, required_ratio=0.8)]
+
+                if soft_products:
+                    logger.info(
+                        f"SOFT-поиск: найдено {len(soft_products)} товар(ов), удовлетворяющих ≥80% ключевых слов."
+                    )
+                    # Переходим к скорингу, но уже по уменьшенному набору
+                    all_products = soft_products
+
+                # ---- ШАГ 2. ГИБКИЙ ПОИСК С ОЦЕНКОЙ РЕЛЕВАНТНОСТИ ----
                 scored_products = []
                 
                 for product in all_products:
@@ -414,10 +454,24 @@ class QueryProcessor:
                     logger.info("No products found with positive relevance score.")
                     return []
                 
-                # АДАПТИВНЫЙ ПОРОГ РЕЛЕВАНТНОСТИ
-                max_score = scored_products[0][1]
+                # --- ДОПОЛНИТЕЛЬНЫЕ ЛОГИ ДЛЯ ДИАГНОСТИКИ ---
+                if scored_products:
+                    scores_only = [s for _, s in scored_products]
+                    max_score = scores_only[0]
+                    avg_score = statistics.mean(scores_only)
+                    median_score = statistics.median(scores_only)
+                    logger.info(
+                        f"Статистика релевантности: макс={max_score:.1f}, среднее={avg_score:.1f}, медиана={median_score:.1f}, всего_оценено={len(scores_only)}"
+                    )
+
+                    # Логируем топ-10 товаров по релевантности
+                    top_samples = [
+                        (p.id, p.name[:60], f"{s:.1f}") for p, s in scored_products[:10]
+                    ]
+                    logger.debug(f"Топ-10 по релевантности: {top_samples}")
+                # --- КОНЕЦ ДОПОЛНИТЕЛЬНЫХ ЛОГОВ ---
                 
-                # БОЛЕЕ МЯГКИЕ пороги для лучшего покрытия
+                # АДАПТИВНЫЙ ПОРОГ РЕЛЕВАНТНОСТИ (ИСКОННАЯ ЛОГИКА)
                 if max_score >= 1000:  # Точное совпадение
                     threshold = 50   # Снижаем порог
                 elif max_score >= 500:  # Название начинается с запроса  
@@ -431,6 +485,11 @@ class QueryProcessor:
                 
                 # Фильтруем по порогу
                 filtered_products = [(p, s) for p, s in scored_products if s >= threshold]
+                
+                # Логи о количестве прошедших/отсеянных товаров
+                logger.info(
+                    f"Прошло фильтр: {len(filtered_products)} из {len(scored_products)} (порог={threshold})"
+                )
                 
                 # НЕ ОГРАНИЧИВАЕМ количество результатов - могут быть разные поставщики
                 # Пользователь хочет видеть все релевантные товары от всех поставщиков
