@@ -243,149 +243,46 @@ def upload_price_list(request):
                     destination.write(chunk)
             logger.info(f"Uploaded file saved to: {file_path_in_uploads}")
             try:
-                file_ext = os.path.splitext(uploaded_file.name)[1].lower()
-                if file_ext in ['.xlsx', '.xls']:
-                    try:
-                        if file_ext == '.xls':
-                            # Для старого формата .xls пробуем разные движки
-                            try:
-                                df = pd.read_excel(file_path_in_uploads, dtype=str, engine='xlrd')
-                            except:
-                                try:
-                                    df = pd.read_excel(file_path_in_uploads, dtype=str, engine='openpyxl')
-                                except:
-                                    df = pd.read_excel(file_path_in_uploads, dtype=str)
-                        else:
-                            df = pd.read_excel(file_path_in_uploads, dtype=str)
-                    except Exception as excel_err:
-                        logger.error(f"Ошибка чтения Excel файла: {excel_err}")
-                        messages.error(request, f'Ошибка чтения файла: {excel_err}')
-                        if os.path.exists(file_path_in_uploads):
-                            try: os.remove(file_path_in_uploads)
-                            except OSError: pass
-                        return render(request, 'products/upload_price_list.html', {'form': form, 'suppliers': Supplier.objects.all()})
-                elif file_ext == '.csv':
-                    df = pd.read_csv(file_path_in_uploads, dtype=str)
-                elif file_ext in ['.doc', '.docx']:
-                    try:
-                        doc = docx.Document(file_path_in_uploads)
-                        data = []
-                        for table in doc.tables:
-                            for row in table.rows:
-                                data.append([cell.text.strip() for cell in row.cells])
-                        if not data:
-                            raise ValueError('В файле DOC не найдено таблиц.')
-                        headers = data[0]
-                        df = pd.DataFrame(data[1:], columns=headers)
-                    except Exception as doc_err:
-                        logger.error(f"Ошибка чтения DOC/DOCX: {doc_err}")
-                        messages.error(request, f'Ошибка чтения DOC/DOCX: {doc_err}')
-                        if os.path.exists(file_path_in_uploads):
-                            try: os.remove(file_path_in_uploads)
-                            except OSError: pass
-                        return render(request, 'products/upload_price_list.html', {'form': form, 'suppliers': Supplier.objects.all()})
-                else:
-                    messages.error(request, f'Неподдерживаемый формат файла: {file_ext}')
-                    if os.path.exists(file_path_in_uploads):
-                        try: os.remove(file_path_in_uploads)
-                        except OSError: pass
-                    return render(request, 'products/upload_price_list.html', {'form': form, 'suppliers': Supplier.objects.all()})
-
-                table_dicts = df.fillna('').to_dict(orient='records')
-
-                # --- Используем каскадную систему (уровни 1-2) ---
                 from .cascade_processor import CascadeProcessor
-                
                 cascade_processor = CascadeProcessor(llm=query_processor.llm)
-                
-                try:
-                    # Обрабатываем с помощью каскадной системы
-                    result = cascade_processor.process_file_cascade(file_path_in_uploads, uploaded_file.name)
-                    
-                    if not result['success']:
-                        error_msg = "Каскадная система не смогла извлечь товары из файла"
-                        logger.error(error_msg)
-                        logger.error(f"Лог каскадной обработки: {result.get('cascade_log', [])}")
-                        messages.error(request, error_msg)
-                        if os.path.exists(file_path_in_uploads):
-                            try: os.remove(file_path_in_uploads)
-                            except OSError: pass
-                        return render(request, 'products/upload_price_list.html', {'form': form, 'suppliers': Supplier.objects.all()})
-                    
-                    products = result['products']
-                    method = result['final_method']
-                    logger.info(f"Каскадная система ({method}) извлекла {len(products)} товаров")
-                    
-                    # Логируем детали
-                    summary = cascade_processor.get_cascade_summary(result)
-                    logger.info(f"Сводка обработки:\n{summary}")
-                    
-                except Exception as e:
-                    logger.error(f"Ошибка каскадной системы: {e}")
-                    messages.error(request, f'Ошибка каскадной системы: {e}')
-                    if os.path.exists(file_path_in_uploads):
-                        try: os.remove(file_path_in_uploads)
-                        except OSError: pass
-                    return render(request, 'products/upload_price_list.html', {'form': form, 'suppliers': Supplier.objects.all()})
+                result = cascade_processor.process_file_cascade(file_path_in_uploads, uploaded_file.name)
 
-                # Сохраняем в базу
-                Product.objects.filter(supplier=supplier).delete()
-                products_to_create = []
-                created_count = 0
-                skipped_count = 0
-                for item in products:
-                    name = item.get('name')
-                    price = item.get('price')
-                    if not name or not str(name).strip():
-                        skipped_count += 1
-                        continue
-                    
-                    # Обработка цены - если нет данных ставим "-"
-                    if price is not None and price != 0:
-                        try:
-                            price_val = str(float(price))
-                        except (TypeError, ValueError):
-                            price_val = "-"
-                    else:
-                        price_val = "-"
-                    
-                    # Обработка количества - если нет данных или дефолт ставим "-"
-                    stock = item.get('stock')
-                    if stock is not None and stock != 100 and stock != 0:  # Исключаем дефолтные значения
-                        try:
-                            stock_num = int(stock)
-                            stock_val = str(stock_num) if stock_num > 0 else "-"
-                        except (TypeError, ValueError):
-                            stock_val = "-"
-                    else:
-                        stock_val = "-"
-                    
-                    # Артикул
-                    article = item.get('article', '') or ''
-                    
-                    products_to_create.append(Product(
-                        supplier=supplier,
-                        name=str(name).strip(),
-                        price=price_val,
-                        stock=stock_val,
-                        article=article,
-                        price_list_date=date_str  # Дата из прайс-листа
-                    ))
-                    created_count += 1
-                    if len(products_to_create) >= 500:
-                        Product.objects.bulk_create(products_to_create)
-                        products_to_create = []
-                if products_to_create:
+                if result.get('success'):
+                    products_to_save = result['products']
+                    Product.objects.filter(supplier=supplier).delete()
+                    logger.info(f"Удалены старые товары для поставщика {supplier.name}.")
+
+                    products_to_create = []
+                    for item in products_to_save:
+                        products_to_create.append(Product(
+                            supplier=supplier,
+                            name=item.get('name'),
+                            price=str(item.get('price', '-')),
+                            stock=str(item.get('stock', '-')),
+                            article=item.get('article', ''),
+                            price_list_date=date_str
+                        ))
+
                     Product.objects.bulk_create(products_to_create)
-                messages.success(request, f'Прайс-лист успешно загружен. Добавлено {created_count} товаров, пропущено {skipped_count} строк.')
+                    messages.success(request, f"Прайс-лист успешно обработан ({result.get('final_method', '')}). Добавлено {len(products_to_create)} товаров.")
+                    logger.info(f"Сводка обработки:\n{cascade_processor.get_cascade_summary(result)}")
+
+                else:
+                    error_summary = cascade_processor.get_cascade_summary(result)
+                    logger.error(f"Каскадная обработка не удалась.\n{error_summary}")
+                    messages.error(request, f"Не удалось обработать файл. Лог: {result.get('error', 'Неизвестная ошибка')}")
+
                 if os.path.exists(file_path_in_uploads):
                     try: os.remove(file_path_in_uploads)
                     except OSError: pass
                 return redirect('upload_price_list')
-            except Exception as process_err:
+            except Exception as e:
                 logger.exception(f"Error processing file {file_path_in_uploads}.")
-                messages.error(request, f'Ошибка обработки файла: {process_err}')
-                raise
+                messages.error(request, f'Ошибка обработки файла: {e}')
+                if os.path.exists(file_path_in_uploads):
+                    try: os.remove(file_path_in_uploads)
+                    except OSError: pass
+                return render(request, 'products/upload_price_list.html', {'form': form, 'suppliers': Supplier.objects.all()})
         else:
             logger.error(f"Price list upload form invalid: {form.errors}")
     else:

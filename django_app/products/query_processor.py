@@ -842,6 +842,60 @@ class QueryProcessor:
             f"Итоговый маппинг колонок: name='{name_col}', price='{price_col}', stock='{stock_col}'"
         )
 
+        # --- ШАГ 1.3. Проверяем, не перепутаны ли цена и остаток по содержимому ---
+        def looks_like_price(v: str) -> bool:
+            v = str(v).lower().strip()
+            if not v:
+                return False
+            # наличие валютного символа или запятой как десятичного
+            if any(sym in v for sym in [',', '₽', 'руб', '$', 'eur', '€', 'тг']):
+                return True
+            # большое число
+            digits = re.sub(r'[^0-9]', '', v)
+            if digits and len(digits) >= 4:
+                return True  # >= 1000
+            return False
+
+        def looks_like_stock(v: str) -> bool:
+            v = str(v).lower().strip()
+            if not v:
+                return False
+            if any(word in v for word in ['нет', 'под заказ', 'ожид', 'отсут', 'в наличии', 'есть']):
+                return True
+            digits = re.sub(r'[^0-9]', '', v)
+            if digits and len(digits) <= 4:  # до 9999 шт
+                return True
+            return False
+
+        swap_needed = False
+        if price_col and stock_col:
+            price_like_in_price = 0
+            stock_like_in_price = 0
+            price_like_in_stock = 0
+            stock_like_in_stock = 0
+            sample_n = min(25, len(table_rows))
+            for i in range(sample_n):
+                price_val = table_rows[i].get(price_col, '')
+                stock_val = table_rows[i].get(stock_col, '')
+                if looks_like_price(price_val):
+                    price_like_in_price += 1
+                if looks_like_stock(price_val):
+                    stock_like_in_price += 1
+                if looks_like_price(stock_val):
+                    price_like_in_stock += 1
+                if looks_like_stock(stock_val):
+                    stock_like_in_stock += 1
+
+            # если price_col больше похож на stock, а stock_col похож на price
+            if stock_like_in_price > price_like_in_price and price_like_in_stock > stock_like_in_stock:
+                swap_needed = True
+
+        if swap_needed:
+            price_col, stock_col = stock_col, price_col
+            logger.warning(
+                f"SWAP DETECTED: переопределяем price_col -> '{price_col}', stock_col -> '{stock_col}' по анализу содержимого."
+            )
+
         results = []
         
         for row_idx, row_dict in enumerate(table_rows):

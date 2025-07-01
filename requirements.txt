@@ -15,8 +15,8 @@ openpyxl==3.1.5
 # sqlite3 is part of the standard library
 
 # AI Integration
-openai==1.10.0
-tiktoken==0.5.0
+openai~=1.70.0
+tiktoken~=0.6.0
 langchain
 langchain-openai
 
@@ -30,6 +30,8 @@ chardet
 
 # Utilities
 python-dotenv==1.1.0
+# HTTP клиент (необходима версия <0.27 для корректной работы прокси в LangChain)
+httpx==0.26.0
 tenacity==8.5.0
 regex==2023.12.25
 
