@@ -146,18 +146,35 @@ class CascadeProcessor:
 
         def find_header(keywords):
             for col_idx, header_name in header_map.items():
-                if any(k in str(header_name).lower() for k in keywords):
+                header_str = str(header_name).lower()
+                if header_str != 'nan' and any(k in header_str for k in keywords):
                     return col_idx
             return None
 
-        name_col = find_header(name_kw) or 'col_0'
+        # Ищем колонки по заголовкам
+        name_col = find_header(name_kw)
         price_col = find_header(price_kw)
         stock_col = find_header(stock_kw)
+        
+        # Если не нашли колонку с названием, ищем по содержимому
+        if not name_col:
+            log.append("Не найдена колонка названий по заголовкам. Пробуем определить по содержимому...")
+            for col_idx in header_map.keys():
+                text_like_count = 0
+                for i in range(min(10, len(df))):
+                    val = str(df.iloc[i].get(col_idx, '')).strip()
+                    # Проверяем, похоже ли на текст (не число и не пустое)
+                    if val and val != 'nan' and re.search(r'[а-яА-Яa-zA-Z]', val) and not re.match(r'^\d+[\.,\d]*$', val):
+                        text_like_count += 1
+                
+                if text_like_count >= 5:  # Если больше половины значений похожи на текст
+                    name_col = col_idx
+                    log.append(f"Вероятная колонка названий найдена по содержимому: {col_idx}")
+                    break
         
         # Если не нашли колонку с ценой по ключевым словам, попробуем найти по данным
         if not price_col:
             log.append("Не найдена колонка цены по заголовкам. Пробуем определить по содержимому...")
-            # Анализируем первые 10 строк данных
             for col_idx in header_map.keys():
                 if col_idx == name_col:  # Пропускаем колонку с названием
                     continue
@@ -165,8 +182,8 @@ class CascadeProcessor:
                 price_like_count = 0
                 for i in range(min(10, len(df))):
                     val = str(df.iloc[i].get(col_idx, '')).strip()
-                    # Проверяем, похоже ли на цену
-                    if re.search(r'\d+[\s,\.]*\d*', val) and not re.search(r'[а-яА-Яa-zA-Z]{3,}', val):
+                    # Проверяем, похоже ли на цену (только цифры, точки, запятые)
+                    if val and val != 'nan' and re.match(r'^\d+[\.,\d\s]*$', val):
                         price_like_count += 1
                 
                 if price_like_count >= 5:  # Если больше половины значений похожи на цены
@@ -174,7 +191,31 @@ class CascadeProcessor:
                     log.append(f"Вероятная колонка цены найдена по содержимому: {col_idx}")
                     break
         
-        log.append(f"Первичный маппинг: Name='{header_map.get(name_col)}' ({name_col}), Price='{header_map.get(price_col)}' ({price_col}), Stock='{header_map.get(stock_col)}' ({stock_col})")
+        # Если не нашли колонку с остатком, ищем по содержимому
+        if not stock_col:
+            log.append("Не найдена колонка остатков по заголовкам. Пробуем определить по содержимому...")
+            for col_idx in header_map.keys():
+                if col_idx in [name_col, price_col]:  # Пропускаем уже найденные колонки
+                    continue
+                    
+                stock_like_count = 0
+                for i in range(min(10, len(df))):
+                    val = str(df.iloc[i].get(col_idx, '')).strip().lower()
+                    # Проверяем, похоже ли на остаток
+                    if val and val != 'nan' and (re.match(r'^\d+$', val) or any(w in val for w in ['наличи', 'заказ', 'есть', 'нет'])):
+                        stock_like_count += 1
+                
+                if stock_like_count >= 3:  # Более мягкий критерий для остатков
+                    stock_col = col_idx
+                    log.append(f"Вероятная колонка остатков найдена по содержимому: {col_idx}")
+                    break
+        
+        # Если все еще не нашли название, берем первую колонку по умолчанию
+        if not name_col:
+            name_col = 'col_0'
+            log.append("Используем первую колонку как колонку названий по умолчанию")
+        
+        log.append(f"Финальный маппинг: Name='{header_map.get(name_col)}' ({name_col}), Price='{header_map.get(price_col)}' ({price_col}), Stock='{header_map.get(stock_col)}' ({stock_col})")
         
         return name_col, price_col, stock_col
 
@@ -184,14 +225,16 @@ class CascadeProcessor:
         for index, row in df.iterrows():
             name = str(row.get(name_col, "")).strip()
             
-            is_subheader = name and all(pd.isna(v) or str(v).strip() == "" for k, v in row.items() if k != name_col)
+            # Пропускаем строки с "nan" или пустыми названиями
+            if not name or name.lower() in ['nan', 'none', '']:
+                continue
+                
+            is_subheader = name and all(pd.isna(v) or str(v).strip() == "" or str(v).strip().lower() == 'nan' for k, v in row.items() if k != name_col)
             
             if is_subheader:
                 current_subheader = name
                 log.append(f"Обнаружен подзаголовок: '{current_subheader}'")
                 continue
-
-            if not name: continue
 
             full_name = f"{current_subheader} {name}".strip()
             
@@ -228,15 +271,18 @@ class CascadeProcessor:
             stock = 100
             if stock_col and pd.notna(row.get(stock_col)):
                 stock_raw = str(row[stock_col]).lower().strip()
-                if any(w in stock_raw for w in ['нет', '0', 'под заказ', 'ожид', 'отсут']): stock = 0
-                elif any(w in stock_raw for w in ['есть', 'в наличии', 'налич', 'много']): stock = 100
-                else:
-                    stock_numbers = re.findall(r'\d+', stock_raw)
-                    if stock_numbers: stock = int(stock_numbers[0])
+                if stock_raw != 'nan':
+                    if any(w in stock_raw for w in ['нет', '0', 'под заказ', 'ожид', 'отсут']): 
+                        stock = 0
+                    elif any(w in stock_raw for w in ['есть', 'в наличии', 'налич', 'много']): 
+                        stock = 100
+                    else:
+                        stock_numbers = re.findall(r'\d+', stock_raw)
+                        if stock_numbers: 
+                            stock = int(stock_numbers[0])
 
-            # Добавляем товар даже если цена = 0 (возможно, это специальная цена)
-            # Но пропускаем строки без названия
-            if full_name and full_name.strip():
+            # Добавляем товар только если есть валидное название
+            if full_name and full_name.strip() and full_name.lower() != 'nan':
                 products.append({"name": full_name, "price": price, "stock": stock})
                 if price == 0:
                     logger.warning(f"Товар с нулевой ценой: {full_name[:50]}...")
@@ -254,7 +300,7 @@ class CascadeProcessor:
         summary_lines.extend(result.get('cascade_log', ['Лог пуст.']))
         summary_lines.extend(result.get('log', []))
         return "\n".join(summary_lines)
-
+    
     def _read_file_safely(self, file_path: str) -> Optional[pd.DataFrame]:
         """Безопасное чтение файла"""
         try:
