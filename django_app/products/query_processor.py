@@ -80,8 +80,8 @@ class QueryProcessor:
             query_cache: QueryCache instance for caching query results
         """
         self.query_cache = query_cache
-        # Используем gpt-4o-mini для экономии и скорости
-        self.llm_model_name = "gpt-4o-mini"
+        # Используем gpt-4o для максимальной точности анализа сложных структур
+        self.llm_model_name = "gpt-4o"
         self._initialize_llm()
     
     def _initialize_llm(self):

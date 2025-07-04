@@ -30,6 +30,7 @@ from django.urls import reverse # Добавили reverse
 import json
 # Закомментирую проблемный импорт
 from .analytics import SystemAnalytics, get_quick_stats
+from pydantic import ValidationError
 
 # --- Добавляем загрузку .env перед инициализацией --- 
 from dotenv import load_dotenv
@@ -249,16 +250,31 @@ def upload_price_list(request):
 
                 if result.get('success'):
                     products_to_save = result['products']
+                    logger.info(f"Каскадный процессор извлек {len(products_to_save)} товаров")
+                    logger.info(f"Первые 3 товара для отладки: {products_to_save[:3]}")
                     Product.objects.filter(supplier=supplier).delete()
                     logger.info(f"Удалены старые товары для поставщика {supplier.name}.")
 
                     products_to_create = []
                     for item in products_to_save:
+                        # Каскадный процессор может возвращать товары с ключом 'name' или 'full_name'
+                        name = item.get('name') or item.get('full_name')
+                        if not name or not str(name).strip():
+                            logger.warning(f"Пропущена строка без имени товара: {item}")
+                            continue
+                        
+                        # Обрабатываем цену правильно
+                        price_value = item.get('price', '-')
+                        if isinstance(price_value, (int, float)) and price_value > 0:
+                            price_str = str(price_value)
+                        else:
+                            price_str = '-'
+                        
                         products_to_create.append(Product(
                             supplier=supplier,
-                            name=item.get('name'),
-                            price=str(item.get('price', '-')),
-                            stock=str(item.get('stock', '-')),
+                            name=str(name).strip(),
+                            price=price_str,
+                            stock=str(item.get('stock', 'в наличии')),
                             article=item.get('article', ''),
                             price_list_date=date_str
                         ))
@@ -668,6 +684,9 @@ def extract_quantity(text):
             return None
     return None
 
+# Импортируем новый ClientRequestExtractor
+from .client_request_extractor import ClientRequestExtractor
+
 @csrf_exempt
 def client_request_to_proposal(request):
     result = None
@@ -682,178 +701,162 @@ def client_request_to_proposal(request):
 
         if form.is_valid():
             text = form.cleaned_data['text']
-            file = form.cleaned_data['file']
-            extracted_text = text
-            if file:
+            file_obj = form.cleaned_data['file'] # Используем file_obj, чтобы не конфликтовать с file_path ниже
+            
+            # Сохраняем файл во временную директорию для обработки
+            temp_file_path = None
+            extracted_items_from_file = []
+            if file_obj:
                 try:
-                    ext = file.name.lower().split('.')[-1]
-                    logger.info(f"Обрабатываем файл: {file.name}, расширение: {ext}")
-                    if ext == 'txt':
-                        raw = file.read()
-                        encoding = chardet.detect(raw)['encoding'] or 'utf-8'
-                        extracted_text = raw.decode(encoding)
-                    elif ext == 'docx':
-                        doc = docx.Document(file)
-                        # Извлекаем текст из параграфов
-                        paragraphs_text = [p.text for p in doc.paragraphs if p.text.strip()]
-                        # Извлекаем текст из таблиц
-                        tables_text = []
-                        for table in doc.tables:
-                            for row in table.rows:
-                                for cell in row.cells:
-                                    if cell.text.strip():
-                                        tables_text.append(cell.text.strip())
-                        extracted_text = '\n'.join(paragraphs_text + tables_text)
-                    elif ext == 'pdf':
-                        reader = PyPDF2.PdfReader(file)
-                        extracted_text = '\n'.join([page.extract_text() for page in reader.pages if page.extract_text()])
-                    elif ext in ['xlsx', 'xls']:
-                        try:
-                            if ext == 'xls':
-                                # Для старого формата .xls используем pandas
-                                try:
-                                    df = pd.read_excel(file, engine='xlrd')
-                                except:
-                                    try:
-                                        df = pd.read_excel(file, engine='openpyxl')
-                                    except:
-                                        df = pd.read_excel(file)
-                                extracted_text = '\n'.join([str(cell) for cell in df.values.flatten() if pd.notna(cell)])
-                            else:
-                                # Для .xlsx используем openpyxl
-                                wb = openpyxl.load_workbook(file)
-                                ws = wb.active
-                                extracted_text = '\n'.join([str(cell.value) for row in ws.iter_rows() for cell in row if cell.value])
-                        except Exception as excel_err:
-                            error = f'Ошибка чтения Excel файла: {excel_err}'
-                            logger.error(f"Excel reading error: {excel_err}")
-                    elif ext == 'csv':
-                        raw = file.read()
-                        encoding = chardet.detect(raw)['encoding'] or 'utf-8'
-                        extracted_text = raw.decode(encoding)
-                    else:
-                        error = f'Неподдерживаемый формат файла: .{ext}. Поддерживаются: txt, docx, pdf, xlsx, xls, csv'
+                    # Создаем временный файл
+                    temp_dir = tempfile.gettempdir()
+                    temp_file_name = f"client_request_{os.urandom(8).hex()}_{file_obj.name}"
+                    temp_file_path = os.path.join(temp_dir, temp_file_name)
+
+                    with open(temp_file_path, 'wb+') as destination:
+                        for chunk in file_obj.chunks():
+                            destination.write(chunk)
+                    logger.info(f"Client request file saved temporarily to: {temp_file_path}")
+
+                    # Инициализируем ClientRequestExtractor и обрабатываем файл
+                    client_extractor = ClientRequestExtractor(llm=query_processor.llm)
+                    file_processing_result = client_extractor.process_client_request_file_cascade(temp_file_path, file_obj.name)
                     
-                    # Отладка извлеченного текста
-                    if not error:
-                        logger.info(f"Извлеченный текст (первые 200 символов): '{extracted_text[:200] if extracted_text else 'ПУСТОЙ'}'")
-                        logger.info(f"Длина извлеченного текста: {len(extracted_text) if extracted_text else 0}")
-                        if extracted_text:
-                            logger.info(f"После strip длина: {len(extracted_text.strip())}")
+                    if file_processing_result.get('success'):
+                        extracted_items_from_file = file_processing_result.get('items', [])
+                        logger.info(f"Successfully extracted {len(extracted_items_from_file)} items from file.")
+                        messages.info(request, f"Из файла извлечено {len(extracted_items_from_file)} позиций.<pre>{client_extractor.get_client_cascade_summary(file_processing_result)}</pre>")
+                    else:
+                        error = f"Ошибка извлечения из файла: {file_processing_result.get('error', 'Неизвестная ошибка')}"
+                        logger.error(f"File extraction failed: {error}\n{client_extractor.get_client_cascade_summary(file_processing_result)}")
+                        messages.error(request, f"Ошибка извлечения из файла: {error}.<pre>{client_extractor.get_client_cascade_summary(file_processing_result)}</pre>")
                         
                 except Exception as e:
-                    error = f'Ошибка чтения файла: {e}'
-                    logger.exception("Ошибка чтения файла запроса")
-
-            if not error and extracted_text and extracted_text.strip():
-                logger.info(f"Starting multi-item processing for text: {extracted_text[:100]}...")
-                final_products_for_proposal = []
-                errors_for_items = [] # Собираем ошибки для отдельных позиций
-                try:
-                    # 1. Разделяем запрос на позиции
-                    items_to_process = query_processor.split_query_into_items(extracted_text)
-                    logger.info(f"Split into items: {items_to_process}") # Логируем результат разделения
-                    
-                    # 2. Обрабатываем каждую позицию
-                    for idx, item in enumerate(items_to_process):
-                        item_query = item.get('item_query')
-                        requested_quantity = item.get('quantity')
-                        logger.info(f"--- Processing item {idx+1}/{len(items_to_process)}: Query='{item_query}', Qty={requested_quantity} ---")
-                        
-                        if not item_query or not item_query.strip():
-                            logger.warning("Skipping item with empty query.")
-                            errors_for_items.append(f"Пропущена пустая позиция {idx+1}")
-                            continue
+                    error = f'Ошибка при работе с файлом запроса: {e}'
+                    logger.exception(f"Error processing client request file: {file_obj.name}")
+                finally:
+                    if temp_file_path and os.path.exists(temp_file_path):
+                        try: os.remove(temp_file_path)
+                        except OSError: pass # Игнорируем ошибку удаления временного файла
+            
+            # Далее обрабатываем текст запроса (если есть)
+            # Мы объединим результаты текстового извлечения и файлового
+            
+            items_from_text = []
+            if text and text.strip() and not error: # Только если нет ошибки при обработке файла
+                logger.info(f"Starting text processing for: {text[:100]}...")
+                # Разделяем запрос на позиции (используем существующий метод из query_processor)
+                # query_processor.split_query_into_items возвращает [{item_query, quantity}]
+                text_items = query_processor.split_query_into_items(text)
+                
+                # Для каждой текстовой позиции, создаем ClientRequestedItem
+                from .client_request_extractor import ClientRequestedItem # Временный импорт для Pydantic
+                for item_dict in text_items:
+                    item_name = item_dict.get('item_query')
+                    item_qty = item_dict.get('quantity')
+                    if item_name and item_name.strip():
+                        # Пробуем извлечь количество, если оно не было распознано LLM
+                        if item_qty is None:
+                            item_qty = extract_quantity(item_name) # Используем старую эвристику extract_quantity
                         
                         try:
-                             # Ищем лучший товар(ы) для этой позиции
-                             logger.info(f"Calling process_query for: '{item_query}'")
-                             found_products = query_processor.process_query(item_query)
-                             logger.info(f"process_query for '{item_query}' returned {len(found_products)} product(s).")
-                             
-                             if found_products:
-                                 # ДОБАВЛЯЕМ ВСЕ РЕЛЕВАНТНЫЕ ТОВАРЫ
-                                 if requested_quantity is None:
-                                     extracted_qty = extract_quantity(item_query)
-                                     if extracted_qty is not None:
-                                         requested_quantity = extracted_qty
-                                         logger.info(f"Quantity extracted: {requested_quantity}")
+                            # Валидируем с помощью ClientRequestedItem (для унификации)
+                            validated_text_item = ClientRequestedItem(full_name=item_name, quantity=item_qty or 1)
+                            items_from_text.append(validated_text_item.dict())
+                        except (ValidationError, ValueError) as e:
+                            logger.warning(f"Validation failed for text item '{item_name}': {e}")
+                            # Добавляем как невалидный, но с количеством 1 для дальнейшей обработки
+                            items_from_text.append({"full_name": item_name, "quantity": item_qty or 1})
+                            
+            # Объединяем все извлеченные позиции (из файла и из текста)
+            all_extracted_items = extracted_items_from_file + items_from_text
+            
+            # Устраняем дубликаты из объединенного списка, используя логику ClientRequestExtractor
+            if all_extracted_items:
+                temp_extractor = ClientRequestExtractor(llm=query_processor.llm) # Временный экземпляр для дедупликации
+                final_unique_items = temp_extractor._remove_client_item_duplicates(all_extracted_items)
+                logger.info(f"Total unique items after deduplication: {len(final_unique_items)}")
+            else:
+                final_unique_items = []
 
-                                 for prod in found_products:
-                                     final_products_for_proposal.append({
-                                         "product": prod,
-                                         "quantity": requested_quantity or 1
-                                     })
-                                 logger.info(f"Appended {len(found_products)} products for item '{item_query}'.")
-                             else:
-                                 # ТОВАР НЕ НАЙДЕН - добавляем как отсутствующий
-                                 logger.warning(f"No product found for item: '{item_query}'")
-                                 
-                                 # Извлекаем количество даже для отсутствующих товаров
-                                 if requested_quantity is None:
-                                      requested_quantity = extract_quantity(item_query) or 1
-                                 
-                                 # Добавляем отсутствующий товар в КП
-                                 final_products_for_proposal.append({
-                                     "product": None,  # Нет товара
-                                     "product_name": item_query,  # Название из запроса
-                                     "quantity": requested_quantity,
-                                     "status": "ТОВАР ОТСУТСТВУЕТ"
-                                 })
-                        except Exception as item_proc_err:
-                              logger.exception(f"Error processing item '{item_query}'")
-                              errors_for_items.append(f"Ошибка обработки '{item_query}': {item_proc_err}")
+            final_products_for_proposal = []
+            if final_unique_items:
+                logger.info(f"Starting product search for {len(final_unique_items)} extracted client items.")
+                for client_item in final_unique_items:
+                    item_query = client_item['full_name']
+                    requested_quantity = client_item['quantity']
+                        
+                    try:
+                        # Ищем лучший товар(ы) для этой позиции в нашей базе
+                        found_products = query_processor.process_query(item_query)
+                        
+                        if found_products:
+                            # Добавляем ВСЕ РЕЛЕВАНТНЫЕ ТОВАРЫ, но с запрошенным количеством
+                            for prod in found_products:
+                                final_products_for_proposal.append({
+                                    "product": prod,
+                                    "quantity": requested_quantity
+                                })
+                        else:
+                            # ТОВАР НЕ НАЙДЕН - добавляем как отсутствующий
+                            logger.warning(f"No product found in DB for client item: '{item_query}'")
+                            final_products_for_proposal.append({
+                                "product": None,
+                                "product_name": item_query,
+                                "quantity": requested_quantity,
+                                "status": "ТОВАР ОТСУТСТВУЕТ"
+                            })
+                    except Exception as item_search_err:
+                        logger.exception(f"Error searching product for client item '{item_query}'")
+                        final_products_for_proposal.append({
+                            "product": None,
+                            "product_name": item_query,
+                            "quantity": requested_quantity,
+                            "status": f"ОШИБКА ПОИСКА: {item_search_err}"
+                        })
 
-                    # 3. Генерируем КП всегда (даже если товары отсутствуют)
-                    if final_products_for_proposal:
-                        logger.info(f"Generating proposal for {len(final_products_for_proposal)} items.")
-                        try:
-                            excel_path = generate_proposal_excel(final_products_for_proposal, extracted_text)
-                            # ... (код сохранения истории и возврата файла HttpResponse) ...
-                            with open(excel_path, 'rb') as f:
-                                 # ... (сохранение Proposal/SearchQuery) ...
-                                 # Считаем только товары, которые есть в наличии
-                                 total_sum = 0
-                                 for p in final_products_for_proposal:
-                                     if p.get("product"):
-                                         try:
-                                             price_num = float(p["product"].price) if p["product"].price != "-" else 0
-                                             total_sum += price_num * (p["quantity"] or 1)
-                                         except (ValueError, TypeError):
-                                             continue
-                                 proposal = Proposal.objects.create(total_sum=total_sum)
-                                 # Добавляем только найденные товары
-                                 found_products = [p["product"] for p in final_products_for_proposal if p.get("product")]
-                                 proposal.products.set(found_products)
-                                 proposal.file.save(f"KP_{proposal.id}.xlsx", File(f))
-                                 search_query, created = SearchQuery.objects.get_or_create(
-                                      query_text=extracted_text[:2000], 
-                                      defaults={'result_count': len(final_products_for_proposal)}
-                                 )
-                                 search_query.proposals.add(proposal)
-                                 logger.info(f"Saved Proposal {proposal.id} and SearchQuery {search_query.id}.")
-                                 # Отдаем файл
-                                 logger.info("Attempting to return Excel file response.")
-                                 with open(excel_path, 'rb') as f_resp:
-                                     response = HttpResponse(f_resp.read(), content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-                                     response['Content-Disposition'] = f'attachment; filename="KP_{search_query.id}.xlsx"'
-                                     logger.info("Successfully created HttpResponse for Excel.")
-                                     return response
-                        except Exception as proposal_err:
-                             logger.exception("Error during proposal generation/saving/response")
-                             error = f"Ошибка формирования/отправки КП: {proposal_err}"
-                             # НЕ ДЕЛАЕМ RETURN
+                # 3. Генерируем КП всегда (даже если товары отсутствуют)
+                if final_products_for_proposal:
+                    logger.info(f"Generating proposal for {len(final_products_for_proposal)} final items.")
+                    try:
+                        excel_path = generate_proposal_excel(final_products_for_proposal, text or file_obj.name)
+                        with open(excel_path, 'rb') as f:
+                            total_sum = 0
+                            # Считаем только товары, которые есть в наличии и имеют цену
+                            for p_data in final_products_for_proposal:
+                                if p_data.get("product"):
+                                    try:
+                                        price_num = float(p_data["product"].price) if p_data["product"].price != "-" else 0
+                                        total_sum += price_num * (p_data["quantity"] or 0) # Используем 0 если количество None
+                                    except (ValueError, TypeError):
+                                        continue
+                            proposal = Proposal.objects.create(total_sum=total_sum)
+                            found_products_objects = [p_data["product"] for p_data in final_products_for_proposal if p_data.get("product")]
+                            proposal.products.set(found_products_objects)
+                            proposal.file.save(f"KP_{proposal.id}.xlsx", File(f))
+                        
+                        search_query_text = text[:2000] if text else (file_obj.name[:2000] if file_obj else "Пустой запрос")
+                        search_query, created = SearchQuery.objects.get_or_create(
+                            query_text=search_query_text, 
+                            defaults={'result_count': len(final_products_for_proposal)}
+                        )
+                        search_query.proposals.add(proposal)
+                        logger.info(f"Saved Proposal {proposal.id} and SearchQuery {search_query.id}.")
+                        
+                        logger.info("Attempting to return Excel file response.")
+                        with open(excel_path, 'rb') as f_resp:
+                            response = HttpResponse(f_resp.read(), content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+                            response['Content-Disposition'] = f'attachment; filename="KP_{search_query.id}.xlsx"'
+                            logger.info("Successfully created HttpResponse for Excel.")
+                            return response
+                    except Exception as proposal_err:
+                        logger.exception("Error during proposal generation/saving/response")
+                        error = f"Ошибка формирования/отправки КП: {proposal_err}"
+                        # НЕ ДЕЛАЕМ RETURN
 
-                    # Если НИЧЕГО не нашли или была ошибка при генерации КП
-                    if not final_products_for_proposal or error:
-                         if not error: # Если просто не нашли
-                              result = 'По вашему запросу ничего не найдено.'
-                              logger.warning("No products found for any item in the query.")
-                         # Если была ошибка, переменная error уже установлена
-
-                except Exception as process_err:
-                    error = f'Общая ошибка обработки запроса: {process_err}'
-                    logger.exception(f"Overall error processing multi-item request: {extracted_text[:100]}...")
+                if not final_products_for_proposal and not error:
+                    result = 'По вашему запросу ничего не найдено.'
+                    logger.warning("No products found for any item in the query.")
 
             elif not error:
                 error = 'Пустой запрос. Введите текст или загрузите файл.'
